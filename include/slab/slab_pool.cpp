@@ -41,16 +41,22 @@ struct SlabPool::Region {
     uintptr_t address{};
     size_t bytes{};
     size_t committed{};
-    Region* next{};
+
+    Region() noexcept = default;
+    Region(const Region&) = delete;
+    Region& operator=(const Region&) = delete;
+
+    /** @brief listから破棄されるとき、所有する仮想領域を予約ごと解放する。 */
+    ~Region() noexcept {
+        if (address != 0) { (void)VirtualFree(reinterpret_cast<void*>(address), 0, MEM_RELEASE); }
+    }
 };
 
-/** @brief コミット後に寿命を開始したComponent*配列。前リンクは末尾からの除去で使う。 */
+/** @brief コミット後に寿命を開始したComponent*配列の管理情報。前後関係はlistが管理する。 */
 struct SlabPool::Chunk {
     Component** data{};
     size_t first{};
     size_t capacity{};
-    Chunk* previous{};
-    Chunk* next{};
 };
 
 /** @brief ID単位の型・格納領域。状態は参照先の共通基底から直接読み、実体は所有しない。 */
@@ -64,13 +70,8 @@ struct SlabPool::Group {
     size_t reservedBytes{};
     atomic<bool> mayContainInactive{};
     atomic<bool> inUse{};
-    Region* regions{};
-    Region* lastRegion{};
-    Chunk* chunks{};
-    Chunk* lastChunk{};
-
-    /** @brief このIDのSlab領域と管理情報を解放する。外部のコンポーネント実体は所有しない。 */
-    ~Group() noexcept;
+    list<Region> regions{}; ///< 仮想領域を所有する。破棄時は各RegionがVirtualFreeする。
+    list<Chunk> chunks{}; ///< 区間の管理情報を所有する。ポインタ配列本体はRegion内にある。
 
     /** @brief 一度だけ試行する。所有者の終了を待つループは行わない。 */
     [[nodiscard]]
@@ -98,20 +99,6 @@ struct SlabPool::Group {
 struct SlabPool::Registry {
     unordered_map<PoolId, Group> groups{};
 };
-
-SlabPool::Group::~Group() noexcept {
-    while (chunks != nullptr) {
-        auto* next{chunks->next};
-        delete chunks;
-        chunks = next;
-    }
-    while (regions != nullptr) {
-        auto* next{regions->next};
-        (void)VirtualFree(reinterpret_cast<void*>(regions->address), 0, MEM_RELEASE);
-        delete regions;
-        regions = next;
-    }
-}
 
 SlabPool::SlabPool() noexcept = default;
 
@@ -169,15 +156,11 @@ bool SlabPool::ReserveGroup(Group& group, size_t minimumCapacity) noexcept {
     size_t bytes{};
     if (!RoundUp(max(requestedBytes - group.reservedBytes, group.reservationStep), PageBytes, bytes) ||
         bytes > MaximumBytes - group.reservedBytes) { return false; }
-    auto* region{new (nothrow) Region{}};
-    if (region == nullptr) { return false; }
+    auto& region{group.regions.emplace_back()};
     void* address{VirtualAlloc(nullptr, bytes, MEM_RESERVE, PAGE_NOACCESS)};
-    if (address == nullptr) { delete region; return false; }
-    region->address = reinterpret_cast<uintptr_t>(address);
-    region->bytes = bytes;
-    if (group.lastRegion != nullptr) { group.lastRegion->next = region; }
-    else { group.regions = region; }
-    group.lastRegion = region;
+    if (address == nullptr) { group.regions.pop_back(); return false; }
+    region.address = reinterpret_cast<uintptr_t>(address);
+    region.bytes = bytes;
     group.reservedBytes += bytes;
     return true;
 }
@@ -189,31 +172,26 @@ bool SlabPool::CommitGroup(Group& group, size_t minimumCapacity) noexcept {
     if (!RoundUp((minimumCapacity - group.capacity) * PointerBytes, group.commitStep, additionalBytes)) { return false; }
     additionalBytes = min(additionalBytes, group.reservedBytes - group.capacity * PointerBytes);
     const auto targetCapacity{group.capacity + additionalBytes / PointerBytes};
-    for (auto* region{group.regions}; group.capacity < targetCapacity; region = region->next) {
-        assert(region != nullptr);
-        const auto available{region->bytes - region->committed};
+    for (auto& region : group.regions) {
+        if (group.capacity >= targetCapacity) { break; }
+        const auto available{region.bytes - region.committed};
         if (available == 0) { continue; }
         const auto bytes{min((targetCapacity - group.capacity) * PointerBytes, available)};
-        auto* chunk{new (nothrow) Chunk{}};
-        if (chunk == nullptr) { return false; }
-        void* address{reinterpret_cast<void*>(region->address + region->committed)};
+        auto& chunk{group.chunks.emplace_back()};
+        void* address{reinterpret_cast<void*>(region.address + region.committed)};
         void* committed{VirtualAlloc(address, bytes, MEM_COMMIT, PAGE_READWRITE)};
-        if (committed == nullptr) { delete chunk; return false; }
+        if (committed == nullptr) { group.chunks.pop_back(); return false; }
         if (group.options.preTouch) {
             for (size_t offset{}; offset < bytes; offset += PageBytes) {
                 *(static_cast<volatile byte*>(committed) + offset) = byte{};
             }
         }
         // 未コミット領域には配列を作らない。値の書き込み前にポインタ配列の寿命だけを開始する。
-        chunk->capacity = bytes / PointerBytes;
-        chunk->data = ::new (committed) Component*[chunk->capacity];
-        chunk->first = group.capacity;
-        chunk->previous = group.lastChunk;
-        if (group.lastChunk != nullptr) { group.lastChunk->next = chunk; }
-        else { group.chunks = chunk; }
-        group.lastChunk = chunk;
-        region->committed += bytes;
-        group.capacity += chunk->capacity;
+        chunk.capacity = bytes / PointerBytes;
+        chunk.data = ::new (committed) Component*[chunk.capacity];
+        chunk.first = group.capacity;
+        region.committed += bytes;
+        group.capacity += chunk.capacity;
     }
     return true;
 }
@@ -228,15 +206,16 @@ bool SlabPool::CommitAtFrameEnd(PoolId id) noexcept {
     return CommitGroup(*group, group->capacity + additionalCount);
 }
 
-SlabPool::Slice SlabPool::ReadChunk(const Chunk* chunk) noexcept {
-    if (chunk == nullptr) { return {}; }
-    return {chunk->data, chunk->capacity, chunk->next};
+SlabPool::Slice SlabPool::ReadChunk(ChunkIterator chunk, ChunkIterator end) noexcept {
+    if (chunk == end) { return {}; }
+    return {chunk->data, chunk->capacity, next(chunk), end};
 }
 SlabPool::Slice SlabPool::Locate(const Group& group, Index index) noexcept {
-    for (auto* chunk{group.chunks}; chunk != nullptr; chunk = chunk->next) {
+    const auto end{group.chunks.cend()};
+    for (auto chunk{group.chunks.cbegin()}; chunk != end; ++chunk) {
         if (index >= chunk->first && index - chunk->first < chunk->capacity) {
             const auto offset{index - chunk->first};
-            return {chunk->data + offset, chunk->capacity - offset, chunk->next};
+            return {chunk->data + offset, chunk->capacity - offset, next(chunk), end};
         }
     }
     return {};
@@ -281,12 +260,12 @@ size_t SlabPool::RemoveInactive() noexcept {
         if (!group.mayContainInactive.exchange(false, memory_order_acq_rel)) { continue; }
         if (group.count == 0) { continue; }
         const auto originalCount{group.count};
-        auto* front{group.chunks};
-        auto* tail{group.lastChunk};
-        while (tail->first >= group.count) { tail = tail->previous; }
+        auto front{group.chunks.begin()};
+        auto tail{prev(group.chunks.end())};
+        while (tail->first >= group.count) { --tail; }
         size_t index{};
         while (index < group.count) {
-            while (index >= front->first + front->capacity) { front = front->next; }
+            while (index >= front->first + front->capacity) { ++front; }
             auto& current{front->data[index - front->first]};
             if (current->state != 0) { ++index; continue; }
             auto& last{tail->data[group.count - 1 - tail->first]};
@@ -294,7 +273,7 @@ size_t SlabPool::RemoveInactive() noexcept {
             last = nullptr;
             --group.count;
             // 移した末尾も状態0の場合があるので、同じindexを再検査する。
-            while (tail->previous != nullptr && tail->first >= group.count) { tail = tail->previous; }
+            while (tail != group.chunks.begin() && tail->first >= group.count) { --tail; }
         }
         removed += originalCount - group.count;
     }
@@ -322,10 +301,11 @@ SlabPool::View SlabPool::AcquireView(PoolId id, const void* tag) const noexcept 
     if (group == nullptr || group->typeTag != tag || !group->TryAcquire()) {
         return {};
     }
-    return {ReadChunk(group->chunks), group->count, group};
+    return {ReadChunk(group->chunks.cbegin(), group->chunks.cend()), group->count, group};
 }
 void SlabPool::ReleaseView(View& view) noexcept {
-    if (view.group != nullptr) { view.group->Release(); }
+    auto* group{view.group};
     view = {};
+    if (group != nullptr) { group->Release(); }
 }
 }

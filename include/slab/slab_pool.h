@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <list>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -96,7 +97,7 @@ public:
      * @brief Componentを継承した型を数値IDへ登録する。例: Register<Enemy>(1)。
      * @tparam T Componentをpublicかつ非virtualで一意に継承した非const/volatile型。
      * @details 共通基底のstateが0なら除去対象、非0なら利用可能。状態読み取り関数の指定は不要。
-     * @note mapを含むID管理部の確保失敗は終了扱い。Slab領域・Slab管理情報の確保失敗はfalseを返す。
+     * @note map・listなど標準ライブラリの確保失敗は終了扱い。Slab用の仮想メモリの確保失敗はfalseを返す。
      */
     template<class T>
     [[nodiscard]]
@@ -162,11 +163,15 @@ public:
     bool Clear() noexcept;
 
 private:
+    /** @brief cpp側で定義するChunkのlistをたどる。Rangeは走査権の寿命中だけ参照する。 */
+    using ChunkIterator = list<Chunk>::const_iterator;
+
     /** @brief 一つのコミット区間にあるComponent*配列を参照する。 */
     struct Slice {
         Component** data{};
         size_t count{};
-        const Chunk* next{};
+        ChunkIterator next{};
+        ChunkIterator end{};
     };
     struct View {
         Slice first{};
@@ -189,7 +194,7 @@ private:
     View AcquireView(PoolId id, const void* tag) const noexcept;
     static void ReleaseView(View& view) noexcept;
     [[nodiscard]]
-    static Slice ReadChunk(const Chunk* chunk) noexcept;
+    static Slice ReadChunk(ChunkIterator chunk, ChunkIterator end) noexcept;
     [[nodiscard]]
     static Slice Locate(const Group& group, Index index) noexcept;
 
@@ -273,7 +278,7 @@ public:
             if (remaining_ == 0) { slice_ = {}; }
             else {
                 --slice_.count;
-                if (slice_.count == 0) { slice_ = SlabPool::ReadChunk(slice_.next); }
+                if (slice_.count == 0) { slice_ = SlabPool::ReadChunk(slice_.next, slice_.end); }
                 else { ++slice_.data; }
             }
         }
