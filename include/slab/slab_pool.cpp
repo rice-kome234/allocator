@@ -9,6 +9,7 @@
 
 namespace slab {
 namespace {
+/** @brief サイズ計算とポインタ差分で扱うバイト数の上限。 */
 constexpr size_t MaximumBytes{static_cast<size_t>(PTRDIFF_MAX)};
 /** @brief 格納するポインタのサイズ。対象構成に合わせてコンパイル時に決まる。 */
 constexpr size_t PointerBytes{sizeof(Component*)};
@@ -26,6 +27,12 @@ size_t GetPageBytes() noexcept {
     return bytes;
 }
 
+/**
+ * @brief valueをunitの倍数へ切り上げる。既に倍数なら値を変えない。
+ * @pre unitは正数で、valueとunitはMaximumBytes以下であること。
+ * @param result 成功時の切り上げ結果。falseの場合は利用しないこと。
+ * @return 切り上げ結果がMaximumBytes以下ならtrue。上限を超える場合はfalse。
+ */
 [[nodiscard]]
 bool RoundUp(size_t value, size_t unit, size_t& result) noexcept {
     const auto remainder{value % unit};
@@ -40,12 +47,15 @@ bool RoundUp(size_t value, size_t unit, size_t& result) noexcept {
 
 /** @brief 一度に予約した仮想領域。コミットを増やしても先頭アドレスは不変。 */
 struct SlabPool::Region {
-    uintptr_t address{};
-    size_t bytes{};
-    size_t committed{};
+    uintptr_t address{}; ///< VirtualAllocで予約した先頭アドレス。予約前は0。
+    size_t bytes{}; ///< このRegion全体の予約バイト数。
+    size_t committed{}; ///< 先頭から連続してコミット済みのバイト数。
 
+    /** @brief 仮想領域をまだ予約していない管理ノードを作る。 */
     Region() noexcept = default;
+    /** @brief 仮想領域の二重解放を防ぐためコピーは禁止する。 */
     Region(const Region&) = delete;
+    /** @brief 仮想領域の二重解放を防ぐためコピー代入は禁止する。 */
     Region& operator=(const Region&) = delete;
 
     /** @brief listから破棄されるとき、所有する仮想領域を予約ごと解放する。 */
@@ -56,9 +66,9 @@ struct SlabPool::Region {
 
 /** @brief コミット後に寿命を開始したComponent*配列の管理情報。前後関係はlistが管理する。 */
 struct SlabPool::Chunk {
-    Component** data{};
-    size_t first{};
-    size_t capacity{};
+    Component** data{}; ///< コミット済みのComponent*配列。メモリの所有者はRegion。
+    size_t first{}; ///< Group全体で数えた、この区間の先頭添字。
+    size_t capacity{}; ///< この区間に格納できるポインタ数。
 };
 
 SlabPool::Group::Group() noexcept = default;

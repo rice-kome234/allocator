@@ -30,6 +30,7 @@ struct Component {
     int state{1};
 
 protected:
+    /** @brief 利用可能な状態で基底部分を初期化する。生成は派生クラスから行う。 */
     Component() noexcept = default;
     /** @brief 基底ポインタ経由のdeleteを防ぎ、外部所有側での派生型の解放に限定する。 */
     ~Component() noexcept = default;
@@ -86,9 +87,13 @@ public:
 
     /** @brief 独立したPoolも必要に応じて生成できる。共有インスタンスとは別の領域を持つ。 */
     SlabPool() noexcept;
+    /** @brief 格納領域と走査権の二重所有を防ぐためコピーは禁止する。 */
     SlabPool(const SlabPool&) = delete;
+    /** @brief 格納領域と走査権の二重所有を防ぐためコピー代入は禁止する。 */
     SlabPool& operator=(const SlabPool&) = delete;
+    /** @brief 利用中のRangeとの寿命関係を固定するためPoolの移動は禁止する。 */
     SlabPool(SlabPool&&) = delete;
+    /** @brief 利用中のRangeとの寿命関係を固定するためPoolの移動代入は禁止する。 */
     SlabPool& operator=(SlabPool&&) = delete;
 
     /** @brief ポインタ格納領域だけを解放する。参照先は利用側が所有する。 */
@@ -126,6 +131,11 @@ public:
     [[nodiscard]]
     Range<T> GetRange(PoolId id) noexcept;
 
+    /**
+     * @brief 読み取り専用の参照を返す範囲を取得する。取得条件と走査権の寿命は非const版と同じ。
+     * @pre TはIDに対応するコンポーネント型であること。実行時の型照合は行わない。
+     * @note const版も同じIDの走査権を取得し、他のRangeや追加処理を排他する。
+     */
     template<class T>
     [[nodiscard]]
     Range<const T> GetRange(PoolId id) const noexcept;
@@ -171,42 +181,93 @@ private:
 
     /** @brief 一つのコミット区間にあるComponent*配列を参照する。 */
     struct Slice {
-        Component** data{};
-        size_t count{};
-        ChunkIterator next{};
-        ChunkIterator end{};
+        Component** data{}; ///< 参照開始位置。空のSliceではnullptr。
+        size_t count{}; ///< 参照開始位置から区間末尾までの枠数。未使用枠も含む。
+        ChunkIterator next{}; ///< 現在の区間を使い切った後に参照するChunk。
+        ChunkIterator end{}; ///< 同じGroupのChunk一覧の終端。
     };
+    /**
+     * @brief 取得済みの走査権と格納領域をRangeへ渡す内部情報。
+     * @note View自体の破棄では走査権を解放しない。受け取ったRangeがReleaseViewを呼ぶ。
+     */
     struct View {
-        Slice first{};
-        size_t count{};
-        Group* group{};
+        Slice first{}; ///< 最初のコミット区間。実際の走査数はcountで制限する。
+        size_t count{}; ///< 取得時点の格納数。状態0の要素も含む。
+        Group* group{}; ///< 走査権を取得したGroup。nullptrなら取得失敗。
     };
 
+    /**
+     * @brief 数値IDから登録済みGroupを検索する。未登録ならnullptr。
+     * @note 検索だけを行い、Groupの作成や走査権の取得は行わない。
+     */
     [[nodiscard]]
     Group* Find(PoolId id) const noexcept;
+
+    /**
+     * @brief Group全体で最低個数を格納できるよう仮想アドレス領域を予約する。
+     * @param minimumCapacity 既存の予約分を含む、必要なポインタの総数。
+     * @pre Groupの初期化中、または呼び出し元が走査権を保持していること。
+     * @return 予約済み容量で足りるか、追加予約に成功すればtrue。サイズ超過・予約失敗はfalse。
+     * @note コミットは行わない。既存領域を移動せず、必要ならRegionを追加する。
+     */
     [[nodiscard]]
     static bool ReserveGroup(Group& group, size_t minimumCapacity) noexcept;
+
+    /**
+     * @brief Group全体で最低個数を書き込めるよう、不足分をコミットする。
+     * @param minimumCapacity 既存のコミット分を含む、必要なポインタの総数。
+     * @pre Groupの初期化中、または呼び出し元が走査権を保持していること。
+     * @return 必要容量を準備できればtrue。サイズ超過・予約やコミットの失敗はfalse。
+     * @details 必要なら予約も追加する。ポインタ配列の寿命を開始し、preTouchもここで行う。
+     * @note 途中で失敗しても、それまで成功した予約・コミットはGroupに保持する。
+     */
     [[nodiscard]]
     static bool CommitGroup(Group& group, size_t minimumCapacity) noexcept;
+
+    /**
+     * @brief ID全体の走査権を一度だけ取得し、Range用の参照情報を返す。
+     * @return 成功時はGroup・先頭区間・状態0を含む格納数。未登録・使用中なら空のView。
+     * @details 要素0件でも取得に成功する。待機・再試行・型照合は行わない。
+     * @note constでもGroupの走査権は更新する。取得後はRangeを通じてReleaseViewで解放する。
+     */
     [[nodiscard]]
     View AcquireView(PoolId id) const noexcept;
+
+    /**
+     * @brief Viewを空にしてから、そのIDの走査権を解放する。空のViewにも呼べる。
+     * @pre このViewから得た参照・ポインタ・イテレータの利用が完了していること。
+     * @note 格納領域とコンポーネント実体は解放しない。
+     */
     static void ReleaseView(View& view) noexcept;
+
+    /**
+     * @brief 指定Chunkのポインタ配列と次の区間をSliceとして返す。終端なら空のSlice。
+     * @pre chunkとendは同じGroupの有効なイテレータであり、走査権を保持していること。
+     * @note 枠数には未使用枠も含む。RangeはViewの格納数を上限にして走査する。
+     */
     [[nodiscard]]
     static Slice ReadChunk(ChunkIterator chunk, ChunkIterator end) noexcept;
+
+    /**
+     * @brief Group内の通算添字を含むChunkを検索し、その枠から区間末尾までを返す。
+     * @pre 呼び出し元がGroupの走査権を保持していること。
+     * @return 対象枠を先頭とするSlice。コミット済み容量の範囲外なら空のSlice。
+     * @note 追加先の未使用枠も検索対象。実体の状態は調べず、Chunk一覧を順に検索する。
+     */
     [[nodiscard]]
     static Slice Locate(const Group& group, Index index) noexcept;
 
     // 内部型の定義。直接メンバーとして保持するため、必要な型情報をここへまとめる。
     /** @brief ID単位の格納領域と走査権。型情報は保持せず、コンポーネント実体は所有しない。 */
     struct Group {
-        Options options{};
-        size_t commitStep{};
-        size_t reservationStep{};
-        size_t count{};
-        size_t capacity{};
-        size_t reservedBytes{};
-        atomic<bool> mayContainInactive{};
-        atomic<bool> inUse{};
+        Options options{}; ///< 登録時に指定された容量と補充条件。
+        size_t commitStep{}; ///< OSページ単位に切り上げた追加コミット量。単位はバイト。
+        size_t reservationStep{}; ///< OSページ単位に切り上げた追加予約の最低量。単位はバイト。
+        size_t count{}; ///< 状態0を含む格納済みポインタ数。
+        size_t capacity{}; ///< コミット済み領域に格納できるポインタ数。
+        size_t reservedBytes{}; ///< 全Regionの予約バイト数。未コミット部分も含む。
+        atomic<bool> mayContainInactive{}; ///< 状態0が含まれる可能性を表す変更通知フラグ。
+        atomic<bool> inUse{}; ///< Rangeまたは即時操作がこのIDを使用している間はtrue。
         list<Region> regions{}; ///< 予約領域を所有し、各Regionの破棄でVirtualFreeする。
         list<Chunk> chunks{}; ///< コミット区間の管理情報を所有する。
 
@@ -223,11 +284,16 @@ private:
 
         /** @brief 即時に完了する操作用の排他ガード。破棄時に走査権を解放する。 */
         struct Access {
-            Group* owned{};
+            Group* owned{}; ///< 走査権を取得したGroup。未取得ならnullptr。
+            /** @brief 走査権を一度だけ取得する。nullptrまたは使用中なら未取得のままにする。 */
             explicit Access(Group* group) noexcept;
+            /** @brief 走査権の二重解放を防ぐためコピーは禁止する。 */
             Access(const Access&) = delete;
+            /** @brief 走査権の二重解放を防ぐためコピー代入は禁止する。 */
             Access& operator=(const Access&) = delete;
+            /** @brief 取得に成功した場合だけ走査権を解放する。 */
             ~Access() noexcept;
+            /** @brief 走査権を取得できていればtrue。 */
             [[nodiscard]]
             explicit operator bool() const noexcept;
         };
@@ -235,7 +301,7 @@ private:
 
     /** @brief 数値IDからGroupを検索する管理部。SlabPoolと同じ寿命で保持する。 */
     struct Registry {
-        unordered_map<PoolId, Group> groups{};
+        unordered_map<PoolId, Group> groups{}; ///< 登録済みIDと、その格納領域・走査権を所有する。
     };
 
     /** @brief constのGetRangeでも走査権を更新するためmutable。登録情報の変更は非const操作だけが行う。 */
@@ -267,11 +333,13 @@ public:
      * @details コピーするのは走査位置だけで、IDの走査権は所有しない。
      * 生成元RangeのReset・破棄後は、このイテレータも取得済み参照も利用できない。
      * @note 状態の判定は走査開始時と位置を進める時に行う。
+     * 複数のコピーで同じ列をたどる間は、stateの0/非0を変更しないこと。
+     * 分類タグはコンパイル時の型情報であり、操作の実装や実行時データは追加しない。
      */
     class Iterator {
     public:
-        using iterator_category = forward_iterator_tag; ///< 標準アルゴリズム向けの分類。
-        using iterator_concept = forward_iterator_tag; ///< C++20のイテレータ分類。
+        using iterator_category = forward_iterator_tag; ///< iterator_traitsを使う従来の標準アルゴリズム向けの分類。
+        using iterator_concept = forward_iterator_tag; ///< C++20のiterator concept判定・ranges向けに優先される分類。
         using value_type = remove_const_t<T>; ///< 参照先の値型。
         using difference_type = ptrdiff_t; ///< 差分を表す符号付き型。
         using pointer = T*; ///< const指定を維持したポインタ型。
