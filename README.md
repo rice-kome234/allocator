@@ -6,6 +6,8 @@ ID管理は`Registry`内の`std::unordered_map<PoolId, Group>`が担当し、Gro
 
 初回登録時とClear後の再登録時に`InitialGroupCapacity`個のIDを想定してバケットをreserveします。既定値は64で、必要ならslab_pool.cpp冒頭の数値を変更します。GroupやSlab領域まで事前生成する設定ではありません。map・listの内部領域は通常どおり動的に確保します。
 
+登録済みIDの上書きを防いだうえで、`groups[id]`で空のGroupを作り、容量設定を代入します。型タグは保持せず、同じIDへの再登録はfalseを返します。
+
 IDが想定数を超えると登録時に再ハッシュすることがあります。Groupへのポインタは再ハッシュでも有効ですが、登録・Clearは全利用者の停止中に行います。全IDの処理順は登録順にはなりません。
 
 予約領域の管理情報は`list<Region>`、コミット区間の管理情報は`list<Chunk>`で保持します。前後のリンクや管理ノードの解放はlistに任せ、各Regionのデストラクタが仮想領域を解放します。コンポーネントのポインタ配列は仮想領域内で連続配置し、Rangeはlistのイテレータで区間を移動します。
@@ -28,14 +30,16 @@ auto& pool{slab::SlabPool::GetInstance()};
 
 共有インスタンスは初回呼び出し時に一度だけ生成され、プログラム終了時に破棄されます。初期化はスレッドセーフですが、登録や走査などの利用条件は下記のとおりです。コンストラクタは公開しているので、必要なら`slab::SlabPool localPool{};`で独立したPoolも作れます。
 
-1. `slab::Component`を継承したクラスを`Register<T>(id)`で登録する。
+1. `slab::Component`を継承したクラスごとにIDを決め、`Register(id, options)`で格納領域を登録する。Registerはテンプレートではない。
 2. 外側で実体を生成し、`Add(id, Component*)`でポインタを1件ずつ渡す。Addはテンプレートではなく、Enemy*なども基底ポインタへ暗黙変換して渡せる。
 3. `GetRange<T>(id)`の取得成功をboolで確認し、範囲forで処理する。
 4. 除去する実体の`state`を0にして、`NotifyStateChanged(id)`を呼ぶ。
 5. 全IDの処理とRangeの利用終了後、`RemoveInactive()`を呼ぶ。
 6. 除去された実体を外側で解放する。終了時は`Clear()`で全IDの登録と格納メモリを解放してから、残る実体も外側で解放する。
 
-追加時には実体の派生型を照合しません。`Register<Enemy>(enemyId)`で登録したIDにはEnemyの実体を渡してください。`GetRange<T>(id)`が照合するのはTとIDの登録型であり、追加された実体の型ではありません。
+IDとクラスは利用側で一対一に対応させます。Enemy用のIDにはEnemyの実体を追加し、`GetRange<Enemy>(enemyId)`で走査してください。Poolは型情報を保持せず、Add・GetRangeとも実行時の型照合を行いません。異なる型を指定して走査することは未定義動作になります。Componentの継承条件とvolatileの禁止はコンパイル時に確認するため、実行時のコストはありません。
+
+未登録ID・使用中のID・nullptr・容量不足の検査は維持します。これらはIDと型の一意性では防げない失敗なので、従来どおりfalse・無効なRange・InvalidIndexで通知します。
 
 `RemoveInactive()`は変更フラグのあるIDだけを走査し、状態0のポインタを末尾と入れ替えて除去します。順序・添字は変わりますが、実体は移動・解放しません。
 
@@ -55,14 +59,9 @@ Poolはスレッドを起動しません。登録・Clear・Poolの破棄は全�
 
 ## 容量設定
 
-ページサイズとポインタサイズは、slab_pool.cpp冒頭の数値で指定します。SYSTEM_INFOによる実行時の取得は行いません。
+ページサイズは`GetSystemInfo`の`SYSTEM_INFO::dwPageSize`から初回だけ取得し、全Poolで共有します。予約・コミット量の切り上げとpreTouchの間隔に使い、範囲forの走査時は取得しません。ポインタサイズは`sizeof(Component*)`でコンパイル時に決めます。
 
-```cpp
-constexpr std::size_t PageBytes{4096};
-constexpr std::size_t PointerBytes{8};
-```
-
-PageBytesは対象OSの実際の通常ページサイズに合わせます。OS自体のページサイズを変更する設定ではありません。PointerBytesは実際のComponent*のサイズと一致することをstatic_assertで確認します。
+予約時は`VirtualAlloc(nullptr, ...)`に先頭アドレスの選択を任せるため、予約アドレスの割り当て粒度への整列はOSが行います。ページサイズと割り当て粒度は別の値です。
 
 `initialCapacity`と`reservedCapacity`はポインタの個数、`commitBytes`は追加コミット量です。仮想メモリを予約し、必要部分をOSページ単位でコミットします。予約を使い切ると別領域を追加し、既存のポインタ配列全体は移動しません。
 

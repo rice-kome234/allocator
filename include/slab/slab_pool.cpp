@@ -10,17 +10,21 @@
 namespace slab {
 namespace {
 constexpr size_t MaximumBytes{static_cast<size_t>(PTRDIFF_MAX)};
-/** @brief 対象環境の通常ページサイズを数値で指定する。OSの実際のページサイズに合わせる。 */
-constexpr size_t PageBytes{4096};
-/** @brief 格納するポインタのサイズを数値で指定する。現在のx64構成では8バイト。 */
-constexpr size_t PointerBytes{8};
+/** @brief 格納するポインタのサイズ。対象構成に合わせてコンパイル時に決まる。 */
+constexpr size_t PointerBytes{sizeof(Component*)};
 /** @brief 初回登録時にmapのバケットを事前確保する想定ID数。Groupの実体は登録時に作る。 */
 constexpr size_t InitialGroupCapacity{64};
 
-static_assert(PointerBytes == sizeof(Component*),
-    "設定したポインタサイズが実際のComponent*と一致していません。");
-static_assert(PointerBytes != 0 && PageBytes != 0 && PageBytes <= MaximumBytes && PageBytes % PointerBytes == 0,
-    "ページサイズには、ポインタサイズの倍数となる正のバイト数を指定してください。");
+/** @brief OSの通常ページサイズを初回だけ取得し、全Poolで共有する。走査時は呼ばない。 */
+[[nodiscard]]
+size_t GetPageBytes() noexcept {
+    static const size_t bytes{[]() noexcept {
+        SYSTEM_INFO information{};
+        GetSystemInfo(&information);
+        return static_cast<size_t>(information.dwPageSize);
+    }()};
+    return bytes;
+}
 
 [[nodiscard]]
 bool RoundUp(size_t value, size_t unit, size_t& result) noexcept {
@@ -91,27 +95,26 @@ SlabPool::Group* SlabPool::Find(PoolId id) const noexcept {
     return &position->second;
 }
 
-bool SlabPool::RegisterRaw(PoolId id, const Options& options, const void* tag) noexcept {
+bool SlabPool::Register(PoolId id, const Options& options) noexcept {
     if (Find(id) != nullptr || options.reservedCapacity == 0 || options.commitBytes == 0 ||
         options.initialCapacity > options.reservedCapacity ||
         options.reservedCapacity > MaximumBytes / PointerBytes || options.commitBytes > MaximumBytes ||
         options.freeThreshold > MaximumBytes / PointerBytes) { return false; }
     size_t commitStep{};
     size_t reservationStep{};
-    if (!RoundUp(options.commitBytes, PageBytes, commitStep) ||
-        !RoundUp(options.reservedCapacity * PointerBytes, PageBytes, reservationStep)) { return false; }
+    const auto pageBytes{GetPageBytes()};
+    if (!RoundUp(options.commitBytes, pageBytes, commitStep) ||
+        !RoundUp(options.reservedCapacity * PointerBytes, pageBytes, reservationStep)) { return false; }
     auto& groups{registry_.groups};
     if (groups.empty()) { groups.reserve(InitialGroupCapacity); }
-    const auto [position, inserted]{groups.try_emplace(id)};
-    if (!inserted) { return false; }
-    auto& group{position->second};
+    // 登録済みIDは冒頭で除外済み。operator[]で空のGroupを作って設定する。
+    auto& group{groups[id]};
     group.options = options;
-    group.typeTag = tag;
     group.commitStep = commitStep;
     group.reservationStep = reservationStep;
     if (!ReserveGroup(group, options.reservedCapacity) || !CommitGroup(group, options.initialCapacity)) {
         // Groupのデストラクタが、途中まで準備した領域も解放する。
-        groups.erase(position);
+        groups.erase(id);
         return false;
     }
     return true;
@@ -122,7 +125,7 @@ bool SlabPool::ReserveGroup(Group& group, size_t minimumCapacity) noexcept {
     const auto requestedBytes{minimumCapacity * PointerBytes};
     if (requestedBytes <= group.reservedBytes) { return true; }
     size_t bytes{};
-    if (!RoundUp(max(requestedBytes - group.reservedBytes, group.reservationStep), PageBytes, bytes) ||
+    if (!RoundUp(max(requestedBytes - group.reservedBytes, group.reservationStep), GetPageBytes(), bytes) ||
         bytes > MaximumBytes - group.reservedBytes) { return false; }
     auto& region{group.regions.emplace_back()};
     void* address{VirtualAlloc(nullptr, bytes, MEM_RESERVE, PAGE_NOACCESS)};
@@ -150,7 +153,8 @@ bool SlabPool::CommitGroup(Group& group, size_t minimumCapacity) noexcept {
         void* committed{VirtualAlloc(address, bytes, MEM_COMMIT, PAGE_READWRITE)};
         if (committed == nullptr) { group.chunks.pop_back(); return false; }
         if (group.options.preTouch) {
-            for (size_t offset{}; offset < bytes; offset += PageBytes) {
+            const auto pageBytes{GetPageBytes()};
+            for (size_t offset{}; offset < bytes; offset += pageBytes) {
                 *(static_cast<volatile byte*>(committed) + offset) = byte{};
             }
         }
@@ -263,9 +267,9 @@ bool SlabPool::Clear() noexcept {
     return true;
 }
 
-SlabPool::View SlabPool::AcquireView(PoolId id, const void* tag) const noexcept {
+SlabPool::View SlabPool::AcquireView(PoolId id) const noexcept {
     auto* group{Find(id)};
-    if (group == nullptr || group->typeTag != tag || !group->TryAcquire()) {
+    if (group == nullptr || !group->TryAcquire()) {
         return {};
     }
     return {ReadChunk(group->chunks.cbegin(), group->chunks.cend()), group->count, group};

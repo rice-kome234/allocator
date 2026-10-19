@@ -95,18 +95,17 @@ public:
     ~SlabPool() noexcept;
 
     /**
-     * @brief Componentを継承した型を数値IDへ登録する。例: Register<Enemy>(1)。
-     * @tparam T Componentをpublicかつ非virtualで一意に継承した非const/volatile型。
-     * @details 共通基底のstateが0なら除去対象、非0なら利用可能。状態読み取り関数の指定は不要。
+     * @brief 数値IDのポインタ格納領域を登録する。例: Register(1)。
+     * @pre IDとコンポーネント型の対応は利用側で決め、同じIDに異なる型を混在させない。
+     * @details 型情報は保持しない。登録済みIDへの再登録は内容を変更せずfalseを返す。
      * @note map・listなど標準ライブラリの確保失敗は終了扱い。Slab用の仮想メモリの確保失敗はfalseを返す。
      */
-    template<class T>
     [[nodiscard]]
     bool Register(PoolId id, const Options& options = {}) noexcept;
 
     /**
      * @brief ポインタを1件末尾に追加し、格納添字を返す。実体はコピーしない。
-     * @pre IDにRegisterした型の実体を渡すこと。入力の実体は他の処理で使用しない。
+     * @pre IDに対応する型の実体を渡すこと。入力の実体は他の処理で使用しない。
      * 同じ実体を複数IDへ登録しない。派生型の照合と重複検査は行わない。
      * @details nullptr・未登録ID・容量不足・同じIDの使用中はInvalidIndex。
      * 別IDの追加は並列に呼べる。状態0のポインタも追加できるが走査では除外する。
@@ -115,7 +114,9 @@ public:
     Index Add(PoolId id, Component* pointer) noexcept;
 
     /**
-     * @brief ID全体の走査権を一度だけ試行して取得する。未登録・型違い・使用中なら無効な範囲。
+     * @brief ID全体の走査権を一度だけ試行して取得する。未登録・使用中なら無効な範囲。
+     * @tparam T Componentをpublicかつ非virtualで一意に継承した型。constは可、volatileは不可。
+     * @pre TはIDに対応する実体の型を指定すること。実行時の型照合は行わない。
      * @details bool変換で取得成功を確認する。要素0件でも取得成功ならtrue。
      * Rangeの破棄・Resetまで同じIDを排他し、release/acquireで次の利用者へ引き継ぐ。
      * 範囲forを最後まで回しても、名前付きRangeが残っていれば走査権は保持する。
@@ -181,11 +182,6 @@ private:
         Group* group{};
     };
 
-    template<class T>
-    [[nodiscard]]
-    static const void* TypeTag() noexcept;
-    [[nodiscard]]
-    bool RegisterRaw(PoolId id, const Options& options, const void* tag) noexcept;
     [[nodiscard]]
     Group* Find(PoolId id) const noexcept;
     [[nodiscard]]
@@ -193,7 +189,7 @@ private:
     [[nodiscard]]
     static bool CommitGroup(Group& group, size_t minimumCapacity) noexcept;
     [[nodiscard]]
-    View AcquireView(PoolId id, const void* tag) const noexcept;
+    View AcquireView(PoolId id) const noexcept;
     static void ReleaseView(View& view) noexcept;
     [[nodiscard]]
     static Slice ReadChunk(ChunkIterator chunk, ChunkIterator end) noexcept;
@@ -201,10 +197,9 @@ private:
     static Slice Locate(const Group& group, Index index) noexcept;
 
     // 内部型の定義。直接メンバーとして保持するため、必要な型情報をここへまとめる。
-    /** @brief ID単位の型・格納領域と走査権。コンポーネント実体は所有しない。 */
+    /** @brief ID単位の格納領域と走査権。型情報は保持せず、コンポーネント実体は所有しない。 */
     struct Group {
         Options options{};
-        const void* typeTag{};
         size_t commitStep{};
         size_t reservationStep{};
         size_t count{};
@@ -251,25 +246,9 @@ private:
 // テンプレート実装（Range・イテレータを含む）
 // -----------------------------------------------------------------------------
 
-template<class T>
-const void* SlabPool::TypeTag() noexcept {
-    static_assert(is_same_v<T, remove_cv_t<T>>,
-        "登録する型は非const/volatileにしてください。");
-    static_assert(is_convertible_v<T*, Component*> &&
-        requires(Component* pointer) { static_cast<T*>(pointer); },
-        "Componentをpublicかつ非virtualで一意に継承してください。");
-    static unsigned char tag{};
-    return &tag;
-}
-
-template<class T>
-bool SlabPool::Register(PoolId id, const Options& options) noexcept {
-    return RegisterRaw(id, options, TypeTag<T>());
-}
-
 /**
  * @brief ID全体の走査権を所有する移動専用の範囲。状態0を選択時に飛ばす。
- * @tparam T IDに登録したコンポーネント型。const付きなら読み取り専用の参照を返す。
+ * @tparam T IDに対応するコンポーネント型。const付きなら読み取り専用の参照を返す。
  * @pre 同じRange自体を複数スレッドから同時に使わない。参照はReset・破棄前に使い終える。
  * @details constの範囲も同じIDを排他する。コピー不可で、移動時に走査権を引き継ぐ。
  * 範囲forの終了やbreakでは解放せず、このRangeのReset・破棄まで走査権を保持する。
@@ -277,6 +256,11 @@ bool SlabPool::Register(PoolId id, const Options& options) noexcept {
  */
 template<class T>
 class SlabPool::Range {
+    // 継承とconst指定の検査はコンパイル時だけ行い、実行時の型情報は持たない。
+    static_assert(!is_volatile_v<T>, "走査する型にvolatileは指定できません。");
+    static_assert(is_convertible_v<T*, const Component*> &&
+        requires(Component* pointer) { static_cast<T*>(pointer); },
+        "Componentをpublicかつ非virtualで一意に継承してください。");
 public:
     /**
      * @brief ポインタ配列を順にたどり、stateが0の実体を飛ばす前方イテレータ。
@@ -387,11 +371,11 @@ private:
 
 template<class T>
 SlabPool::Range<T> SlabPool::GetRange(PoolId id) noexcept {
-    return Range<T>{AcquireView(id, TypeTag<remove_const_t<T>>())};
+    return Range<T>{AcquireView(id)};
 }
 
 template<class T>
 SlabPool::Range<const T> SlabPool::GetRange(PoolId id) const noexcept {
-    return Range<const T>{AcquireView(id, TypeTag<remove_const_t<T>>())};
+    return Range<const T>{AcquireView(id)};
 }
 }

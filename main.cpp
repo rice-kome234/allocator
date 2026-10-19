@@ -23,13 +23,14 @@ int main() {
     constexpr slab::SlabPool::PoolId enemyId{1};
     auto& pool{slab::SlabPool::GetInstance()}; // 自分で生成せず、共有Poolへの参照を取得する。
 
-    // 1. 数値IDに型を登録する。容量はポインタの個数、commitBytesはバイト数。
-    if (!pool.Register<Enemy>(enemyId, {
+    // 1. Enemy専用の数値IDを登録する。型との対応は利用側で決める。
+    // 容量はポインタの個数、commitBytesはバイト数。
+    if (!pool.Register(enemyId, {
         .initialCapacity = 4,
         .reservedCapacity = 1024,
         .commitBytes = 4096
     })) {
-        cerr << "型の登録に失敗しました。\n";
+        cerr << "IDの登録に失敗しました。\n";
         return 1;
     }
 
