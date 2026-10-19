@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{4e90f4f7-2575-436d-8ffa-acba6e41a494}</ProjectGuid>
+    <RootNamespace>slabPool</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <VcpkgEnabled>false</VcpkgEnabled>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+    <!-- MSVC 14.51 の LTCG で countr_zero が C1001 になるため /O2 のみを使用する。 -->
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <EnableASAN Condition="'$(Sanitize)'=='true'">true</EnableASAN>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildProjectDirectory)\bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\</IntDir>
+    <OutDir Condition="'$(Sanitize)'=='true'">$(MSBuildProjectDirectory)\bin\$(Platform)\$(Configuration)-ASan\</OutDir>
+    <IntDir Condition="'$(Sanitize)'=='true'">$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)-ASan\</IntDir>
+    <TargetName>slabPool</TargetName>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <!-- alignas による意図的なパディングだけを警告対象から除外する。 -->
+      <DisableSpecificWarnings>4324;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PreprocessorDefinitions>_CONSOLE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(SlabTestsOnly)'=='true'">SLAB_TESTS_ONLY;_CONSOLE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <Manifest><EnableSegmentHeap>true</EnableSegmentHeap></Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <BasicRuntimeChecks Condition="'$(Sanitize)'!='true'">EnableFastChecks</BasicRuntimeChecks>
+      <BasicRuntimeChecks Condition="'$(Sanitize)'=='true'">Default</BasicRuntimeChecks>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="benchmarks\interactive_test.cpp" />
+    <ClCompile Include="benchmarks\parallel_executor.cpp" />
+    <ClCompile Include="include\slab\slab_pool.cpp" />
+    <ClCompile Include="tests\tests.cpp" />
+    <ClCompile Include="benchmarks\benchmarks.cpp" />
+    <ClCompile Include="benchmarks\growth_benchmark.cpp" />
+    <ClCompile Include="benchmarks\parallel_growth_benchmark.cpp" />
+    <ClCompile Include="benchmarks\churn_benchmark.cpp" />
+    <ClCompile Include="benchmarks\parallel_tasks.cpp" />
+    <ClCompile Include="benchmarks\bulk_benchmark.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\slab\slab_pool.h" />
+    <ClInclude Include="include\slab\slab_pool_impl.h" />
+    <ClInclude Include="tests\tests.h" />
+    <ClInclude Include="benchmarks\benchmarks.h" />
+    <ClInclude Include="benchmarks\growth_benchmark_internal.h" />
+    <ClInclude Include="benchmarks\parallel_tasks.h" />
+    <ClInclude Include="benchmarks\parallel_tasks_impl.h" />
+    <ClInclude Include="benchmarks\interactive_test.h" />
+    <ClInclude Include="benchmarks\parallel_executor_impl.h" />
+    <ClInclude Include="benchmarks\parallel_executor.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="docs\validation.md" />
+    <None Include="docs\benchmark-full.txt" />
+    <None Include="docs\benchmark-quick.txt" />
+    <None Include="docs\benchmark-numeric-quick.txt" />
+    <None Include="docs\benchmark-pointer-quick.txt" />
+    <None Include="docs\benchmark-pointer-aligned-quick.txt" />
+    <None Include="docs\benchmark-pointer-growth-quick.txt" />
+    <None Include="docs\benchmark-pointer-parallel-quick.txt" />
+    <None Include="docs\benchmark-pointer-churn-quick.txt" />
+    <None Include="docs\benchmark-pointer-bulk-quick.txt" />
+    <None Include="scripts\build.ps1" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+  <Target Name="CopyAddressSanitizerRuntime" AfterTargets="Build" Condition="'$(Sanitize)'=='true'">
+    <Copy SourceFiles="$(VCToolsInstallDir)bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

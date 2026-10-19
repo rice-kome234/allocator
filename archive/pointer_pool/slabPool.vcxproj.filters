@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Library"><UniqueIdentifier>{9B6D8672-BFBE-4F5E-BE29-E9C63E534059}</UniqueIdentifier></Filter>
+    <Filter Include="Tests"><UniqueIdentifier>{E35084C1-59A6-40D6-8489-FE306F62B44D}</UniqueIdentifier></Filter>
+    <Filter Include="Benchmarks"><UniqueIdentifier>{14465B7E-A389-4F38-89C3-E80A81CD6CDD}</UniqueIdentifier></Filter>
+    <Filter Include="Documentation"><UniqueIdentifier>{C8323416-7152-4BB8-8A26-1C20E53A0275}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="benchmarks\interactive_test.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="benchmarks\parallel_executor.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="include\slab\slab_pool.cpp"><Filter>Library</Filter></ClCompile>
+    <ClCompile Include="tests\tests.cpp"><Filter>Tests</Filter></ClCompile>
+    <ClCompile Include="benchmarks\benchmarks.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="benchmarks\growth_benchmark.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="benchmarks\parallel_growth_benchmark.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="benchmarks\churn_benchmark.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="benchmarks\parallel_tasks.cpp"><Filter>Benchmarks</Filter></ClCompile>
+    <ClCompile Include="benchmarks\bulk_benchmark.cpp"><Filter>Benchmarks</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\slab\slab_pool.h"><Filter>Library</Filter></ClInclude>
+    <ClInclude Include="include\slab\slab_pool_impl.h"><Filter>Library</Filter></ClInclude>
+    <ClInclude Include="tests\tests.h"><Filter>Tests</Filter></ClInclude>
+    <ClInclude Include="benchmarks\benchmarks.h"><Filter>Benchmarks</Filter></ClInclude>
+    <ClInclude Include="benchmarks\growth_benchmark_internal.h"><Filter>Benchmarks</Filter></ClInclude>
+    <ClInclude Include="benchmarks\parallel_tasks.h"><Filter>Benchmarks</Filter></ClInclude>
+    <ClInclude Include="benchmarks\parallel_tasks_impl.h"><Filter>Benchmarks</Filter></ClInclude>
+    <ClInclude Include="benchmarks\interactive_test.h"><Filter>Benchmarks</Filter></ClInclude>
+    <ClInclude Include="benchmarks\parallel_executor_impl.h"><Filter>Benchmarks</Filter></ClInclude>
+    <ClInclude Include="benchmarks\parallel_executor.h"><Filter>Benchmarks</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md"><Filter>Documentation</Filter></None>
+    <None Include="docs\validation.md"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-full.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-numeric-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-pointer-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-pointer-aligned-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-pointer-growth-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-pointer-parallel-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-pointer-churn-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="docs\benchmark-pointer-bulk-quick.txt"><Filter>Documentation</Filter></None>
+    <None Include="scripts\build.ps1" />
+  </ItemGroup>
+</Project>

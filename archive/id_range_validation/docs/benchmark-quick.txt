@@ -1,0 +1,138 @@
+=== Type-Specific Slab Pool Benchmark ===
+MSVC _MSC_FULL_VER=195136257 C++=202002
+CPU=13th Gen Intel(R) Core(TM) i7-13650HX
+Build=Release x64, hardware threads=20, sizeof(Item)=64, alignof(Item)=8, atomic64/pointer lock-free=true
+Memory = requested payload/metadata, excludes CRT/OS allocation headers, RSS and test harness.
+Cold = empty pool (not a cold OS heap); reused = filled/flushed pool; reserved = empty preallocated slabs.
+Slabs are retained until pool destruction. Timing ends at object destruction, not slab deallocation.
+A speedup below 1 means slower. Independent phase medians need not sum to median(total).
+Samples=3; mode=quick
+
+=== Allocation (ms; medians; total = create + request + release) ===
+N=1000
+  method                    create    request    release      total
+  new/delete                0.0303     0.0000     0.0170     0.0473
+  pool cold                 0.0342     0.0182     0.0078     0.0597
+  pool reused               0.0097     0.0181     0.0078     0.0368
+  speedup new/pool: cold create=0.8860x total=0.7923x; reused create=3.1237x total=1.2853x
+  bytes: heap payload=64000, common pointer array=8000, pool cold/reused=70080/70080
+N=10000
+  method                    create    request    release      total
+  new/delete                0.1352     0.0000     0.0644     0.1994
+  pool cold                 0.1328     0.1997     0.0783     0.4108
+  pool reused               0.0935     0.1931     0.0749     0.3690
+  speedup new/pool: cold create=1.0181x total=0.4854x; reused create=1.4460x total=0.5404x
+  bytes: heap payload=640000, common pointer array=80000, pool cold/reused=687552/687552
+
+=== Random churn (N=10000, delete/flush 25%, refill, 8 frames) ===
+  new/delete                0.3256     0.0000     0.2087     0.5492
+  pool reused               0.2417     0.7586     0.1703     1.1898
+
+=== Iteration (ms/pass, N=10000, 4 passes/sample) ===
+ordered = allocation order + tail holes; random = shuffled pointer order + random holes
+heap placement is allocator-dependent; direct slab order stays physical
+layout=ordered occupancy=100% live=10000 capacity=10048 pool_bytes=687552 useful/pool=93.0839%
+  heap pointers        read=    0.0131 update=    0.0095 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0279 update=    0.0330 speedup=0.4709x/0.2896x
+  pool pointers        read=    0.0132 update=    0.0089 speedup=0.9943x/1.0761x
+  pool slots           read=    0.0132 update=    0.0114 speedup=0.9924x/0.8377x
+  pool bitmap          read=    0.0155 update=    0.0177 speedup=0.8454x/0.5403x
+  requested bytes: heap live payload=640000; pointer-array method adds=80000; intrusive next already included; pool direct needs no pointer array
+layout=ordered occupancy=75% live=7500 capacity=10048 pool_bytes=687552 useful/pool=69.8129%
+  heap pointers        read=    0.0102 update=    0.0064 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0207 update=    0.0246 speedup=0.4939x/0.2609x
+  pool pointers        read=    0.0097 update=    0.0067 speedup=1.0515x/0.9625x
+  pool slots           read=    0.0113 update=    0.0097 speedup=0.9047x/0.6624x
+  pool bitmap          read=    0.0118 update=    0.0134 speedup=0.8626x/0.4795x
+  requested bytes: heap live payload=480000; pointer-array method adds=60000; intrusive next already included; pool direct needs no pointer array
+layout=ordered occupancy=50% live=5000 capacity=10048 pool_bytes=687552 useful/pool=46.5419%
+  heap pointers        read=    0.0065 update=    0.0043 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0136 update=    0.0163 speedup=0.4779x/0.2634x
+  pool pointers        read=    0.0065 update=    0.0044 speedup=1.0078x/0.9718x
+  pool slots           read=    0.0089 update=    0.0080 speedup=0.7303x/0.5392x
+  pool bitmap          read=    0.0081 update=    0.0092 speedup=0.7975x/0.4661x
+  requested bytes: heap live payload=320000; pointer-array method adds=40000; intrusive next already included; pool direct needs no pointer array
+layout=ordered occupancy=25% live=2500 capacity=10048 pool_bytes=687552 useful/pool=23.2710%
+  heap pointers        read=    0.0034 update=    0.0022 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0068 update=    0.0085 speedup=0.4926x/0.2596x
+  pool pointers        read=    0.0034 update=    0.0023 speedup=0.9926x/0.9670x
+  pool slots           read=    0.0070 update=    0.0065 speedup=0.4803x/0.3385x
+  pool bitmap          read=    0.0046 update=    0.0051 speedup=0.7204x/0.4314x
+  requested bytes: heap live payload=160000; pointer-array method adds=20000; intrusive next already included; pool direct needs no pointer array
+layout=ordered occupancy=10% live=1000 capacity=10048 pool_bytes=687552 useful/pool=9.3084%
+  heap pointers        read=    0.0016 update=    0.0010 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0032 update=    0.0037 speedup=0.5118x/0.2819x
+  pool pointers        read=    0.0017 update=    0.0010 speedup=0.9559x/1.0000x
+  pool slots           read=    0.0072 update=    0.0076 speedup=0.2257x/0.1391x
+  pool bitmap          read=    0.0037 update=    0.0036 speedup=0.4422x/0.2897x
+  requested bytes: heap live payload=64000; pointer-array method adds=8000; intrusive next already included; pool direct needs no pointer array
+layout=random occupancy=100% live=10000 capacity=10048 pool_bytes=687552 useful/pool=93.0839%
+  heap pointers        read=    0.0155 update=    0.0131 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0489 update=    0.0551 speedup=0.3166x/0.2380x
+  pool pointers        read=    0.0158 update=    0.0134 speedup=0.9779x/0.9813x
+  pool slots           read=    0.0179 update=    0.0180 speedup=0.8633x/0.7268x
+  pool bitmap          read=    0.0277 update=    0.0251 speedup=0.5597x/0.5209x
+  requested bytes: heap live payload=640000; pointer-array method adds=80000; intrusive next already included; pool direct needs no pointer array
+layout=random occupancy=75% live=7500 capacity=10048 pool_bytes=687552 useful/pool=69.8129%
+  heap pointers        read=    0.0100 update=    0.0085 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0311 update=    0.0325 speedup=0.3197x/0.2606x
+  pool pointers        read=    0.0099 update=    0.0082 speedup=1.0051x/1.0304x
+  pool slots           read=    0.0196 update=    0.0207 speedup=0.5090x/0.4099x
+  pool bitmap          read=    0.0127 update=    0.0137 speedup=0.7819x/0.6175x
+  requested bytes: heap live payload=480000; pointer-array method adds=60000; intrusive next already included; pool direct needs no pointer array
+layout=random occupancy=50% live=5000 capacity=10048 pool_bytes=687552 useful/pool=46.5419%
+  heap pointers        read=    0.0071 update=    0.0059 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0205 update=    0.0234 speedup=0.3471x/0.2516x
+  pool pointers        read=    0.0069 update=    0.0060 speedup=1.0401x/0.9874x
+  pool slots           read=    0.0275 update=    0.0325 speedup=0.2593x/0.1815x
+  pool bitmap          read=    0.0094 update=    0.0103 speedup=0.7580x/0.5742x
+  requested bytes: heap live payload=320000; pointer-array method adds=40000; intrusive next already included; pool direct needs no pointer array
+layout=random occupancy=25% live=2500 capacity=10048 pool_bytes=687552 useful/pool=23.2710%
+  heap pointers        read=    0.0034 update=    0.0027 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0104 update=    0.0110 speedup=0.3213x/0.2472x
+  pool pointers        read=    0.0035 update=    0.0028 speedup=0.9640x/0.9646x
+  pool slots           read=    0.0188 update=    0.0209 speedup=0.1784x/0.1305x
+  pool bitmap          read=    0.0051 update=    0.0054 speedup=0.6537x/0.5070x
+  requested bytes: heap live payload=160000; pointer-array method adds=20000; intrusive next already included; pool direct needs no pointer array
+layout=random occupancy=10% live=1000 capacity=10048 pool_bytes=687552 useful/pool=9.3084%
+  heap pointers        read=    0.0014 update=    0.0012 speedup=1.0000x/1.0000x
+  heap linked list     read=    0.0046 update=    0.0043 speedup=0.3011x/0.2701x
+  pool pointers        read=    0.0013 update=    0.0011 speedup=1.0769x/1.0930x
+  pool slots           read=    0.0115 update=    0.0116 speedup=0.1215x/0.1013x
+  pool bitmap          read=    0.0022 update=    0.0027 speedup=0.6292x/0.4434x
+  requested bytes: heap live payload=64000; pointer-array method adds=8000; intrusive next already included; pool direct needs no pointer array
+
+=== Parallel (fixed total=10000; barriers included, thread startup excluded) ===
+  method                    create    request    release      total
+threads=1
+  new/delete                0.3217     0.0000     0.1768     0.4985
+  shared cold               0.1753     0.2571     0.0816     0.5238
+  shared reserved           0.2142     0.2232     0.0843     0.5217
+  private cold              0.1847     0.2345     0.0786     0.4864
+  private reserved          0.1818     0.2176     0.0789     0.4782
+threads=2
+  new/delete                0.2037     0.0000     0.1706     0.3473
+  shared cold               0.3959     0.2635     0.1021     0.7653
+  shared reserved           0.5118     0.2919     0.0835     0.8867
+  private cold              0.1434     0.1168     0.0848     0.3529
+  private reserved          0.1300     0.1168     0.0868     0.3328
+threads=4
+  new/delete                0.1629     0.0000     0.1315     0.2944
+  shared cold               0.5370     0.4247     0.0839     1.0230
+  shared reserved           0.5207     0.4165     0.0828     1.0045
+  private cold              0.1211     0.0680     0.0838     0.2718
+  private reserved          0.1008     0.0678     0.0849     0.2572
+threads=8
+  new/delete                0.2112     0.0000     0.1110     0.3306
+  shared cold               0.6209     1.0873     0.0837     1.7992
+  shared reserved           0.6004     0.8550     0.0834     1.5288
+  private cold              0.2191     0.0917     0.0827     0.3943
+  private reserved          0.1584     0.0801     0.0827     0.3218
+threads=16
+  new/delete                0.3474     0.0000     0.1526     0.5000
+  shared cold               0.8154     1.3886     0.0850     2.2595
+  shared reserved           0.7777     1.7693     0.0855     2.7337
+  private cold              0.2686     0.1140     0.0834     0.4661
+  private reserved          0.2761     0.0832     0.0829     0.4347
+
+All benchmark validations passed; checksum=8952982280445

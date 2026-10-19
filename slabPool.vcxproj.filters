@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="SlabPool">
+      <UniqueIdentifier>{9B6D8672-BFBE-4F5E-BE29-E9C63E534059}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="include\slab\slab_pool.cpp">
+      <Filter>SlabPool</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\slab\slab_pool.h">
+      <Filter>SlabPool</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
