@@ -2,13 +2,14 @@
  * @brief 数値ID別に外部オブジェクトのポインタを保持するSlab Pool。
  */
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <limits>
 #include <list>
-#include <memory>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace slab {
@@ -157,6 +158,7 @@ public:
      * @pre 他スレッドからのPool操作を停止してから呼ぶ。並列呼び出しとの同期は行わない。
      * @return 全解放できればtrue。使用中のIDがあれば何も解放せずfalse。
      * @details 空Poolにも繰り返し呼べる。再利用時はRegisterからやり直す。
+     * Registry自体はメンバーとして残し、mapを空の初期状態へ戻す。
      * @note 参照先のコンポーネント実体は解放しない。成功後に外側の所有者が解放する。
      */
     [[nodiscard]]
@@ -198,8 +200,51 @@ private:
     [[nodiscard]]
     static Slice Locate(const Group& group, Index index) noexcept;
 
-    /** @brief ID管理mapを持つ。初回登録で生成し、Clearでバケット領域も含めて破棄する。 */
-    unique_ptr<Registry> registry_{};
+    // 内部型の定義。直接メンバーとして保持するため、必要な型情報をここへまとめる。
+    /** @brief ID単位の型・格納領域と走査権。コンポーネント実体は所有しない。 */
+    struct Group {
+        Options options{};
+        const void* typeTag{};
+        size_t commitStep{};
+        size_t reservationStep{};
+        size_t count{};
+        size_t capacity{};
+        size_t reservedBytes{};
+        atomic<bool> mayContainInactive{};
+        atomic<bool> inUse{};
+        list<Region> regions{}; ///< 予約領域を所有し、各Regionの破棄でVirtualFreeする。
+        list<Chunk> chunks{}; ///< コミット区間の管理情報を所有する。
+
+        /** @brief Region・Chunkの定義があるcpp側で空の管理領域を初期化する。 */
+        Group() noexcept;
+        /** @brief 管理情報と仮想領域を解放する。実体の解放は外部の所有者が行う。 */
+        ~Group() noexcept;
+
+        /** @brief IDの走査権を一度だけ取得する。使用中なら待たずに失敗する。 */
+        [[nodiscard]]
+        bool TryAcquire() noexcept;
+        /** @brief 走査権を解放し、次の利用者へ更新内容を引き継ぐ。 */
+        void Release() noexcept;
+
+        /** @brief 即時に完了する操作用の排他ガード。破棄時に走査権を解放する。 */
+        struct Access {
+            Group* owned{};
+            explicit Access(Group* group) noexcept;
+            Access(const Access&) = delete;
+            Access& operator=(const Access&) = delete;
+            ~Access() noexcept;
+            [[nodiscard]]
+            explicit operator bool() const noexcept;
+        };
+    };
+
+    /** @brief 数値IDからGroupを検索する管理部。SlabPoolと同じ寿命で保持する。 */
+    struct Registry {
+        unordered_map<PoolId, Group> groups{};
+    };
+
+    /** @brief constのGetRangeでも走査権を更新するためmutable。登録情報の変更は非const操作だけが行う。 */
+    mutable Registry registry_{};
 };
 
 // -----------------------------------------------------------------------------

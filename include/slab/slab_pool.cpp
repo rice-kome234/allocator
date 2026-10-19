@@ -4,10 +4,8 @@
 #include "slab_pool.h"
 #include <Windows.h>
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <new>
-#include <unordered_map>
 
 namespace slab {
 namespace {
@@ -59,46 +57,20 @@ struct SlabPool::Chunk {
     size_t capacity{};
 };
 
-/** @brief ID単位の型・格納領域。状態は参照先の共通基底から直接読み、実体は所有しない。 */
-struct SlabPool::Group {
-    Options options{};
-    const void* typeTag{};
-    size_t commitStep{};
-    size_t reservationStep{};
-    size_t count{};
-    size_t capacity{};
-    size_t reservedBytes{};
-    atomic<bool> mayContainInactive{};
-    atomic<bool> inUse{};
-    list<Region> regions{}; ///< 仮想領域を所有する。破棄時は各RegionがVirtualFreeする。
-    list<Chunk> chunks{}; ///< 区間の管理情報を所有する。ポインタ配列本体はRegion内にある。
+SlabPool::Group::Group() noexcept = default;
+SlabPool::Group::~Group() noexcept = default;
 
-    /** @brief 一度だけ試行する。所有者の終了を待つループは行わない。 */
-    [[nodiscard]]
-    bool TryAcquire() noexcept {
-        bool expected{};
-        return inUse.compare_exchange_strong(expected, true, memory_order_acquire, memory_order_relaxed);
-    }
-    void Release() noexcept { inUse.store(false, memory_order_release); }
+bool SlabPool::Group::TryAcquire() noexcept {
+    bool expected{};
+    return inUse.compare_exchange_strong(expected, true, memory_order_acquire, memory_order_relaxed);
+}
+void SlabPool::Group::Release() noexcept { inUse.store(false, memory_order_release); }
 
-    /** @brief 即時に完了する操作用の排他ガード。Rangeは同じ権利を自身の寿命中保持する。 */
-    struct Access {
-        Group* owned{};
-        explicit Access(Group* group) noexcept {
-            if (group != nullptr && group->TryAcquire()) { owned = group; }
-        }
-        Access(const Access&) = delete;
-        Access& operator=(const Access&) = delete;
-        ~Access() noexcept { if (owned != nullptr) { owned->Release(); } }
-        [[nodiscard]]
-        explicit operator bool() const noexcept { return owned != nullptr; }
-    };
-};
-
-/** @brief 数値IDからGroupを検索する管理部。Groupはmapの要素として直接保持する。 */
-struct SlabPool::Registry {
-    unordered_map<PoolId, Group> groups{};
-};
+SlabPool::Group::Access::Access(Group* group) noexcept {
+    if (group != nullptr && group->TryAcquire()) { owned = group; }
+}
+SlabPool::Group::Access::~Access() noexcept { if (owned != nullptr) { owned->Release(); } }
+SlabPool::Group::Access::operator bool() const noexcept { return owned != nullptr; }
 
 SlabPool::SlabPool() noexcept = default;
 
@@ -114,9 +86,8 @@ SlabPool::~SlabPool() noexcept {
 }
 
 SlabPool::Group* SlabPool::Find(PoolId id) const noexcept {
-    if (!registry_) { return nullptr; }
-    const auto position{registry_->groups.find(id)};
-    if (position == registry_->groups.end()) { return nullptr; }
+    const auto position{registry_.groups.find(id)};
+    if (position == registry_.groups.end()) { return nullptr; }
     return &position->second;
 }
 
@@ -129,11 +100,8 @@ bool SlabPool::RegisterRaw(PoolId id, const Options& options, const void* tag) n
     size_t reservationStep{};
     if (!RoundUp(options.commitBytes, PageBytes, commitStep) ||
         !RoundUp(options.reservedCapacity * PointerBytes, PageBytes, reservationStep)) { return false; }
-    if (!registry_) {
-        registry_ = make_unique<Registry>();
-        registry_->groups.reserve(InitialGroupCapacity);
-    }
-    auto& groups{registry_->groups};
+    auto& groups{registry_.groups};
+    if (groups.empty()) { groups.reserve(InitialGroupCapacity); }
     const auto [position, inserted]{groups.try_emplace(id)};
     if (!inserted) { return false; }
     auto& group{position->second};
@@ -245,8 +213,7 @@ bool SlabPool::NotifyStateChanged(PoolId id) noexcept {
 }
 
 size_t SlabPool::RemoveInactive() noexcept {
-    if (!registry_) { return 0; }
-    auto& groups{registry_->groups};
+    auto& groups{registry_.groups};
     // 先に全IDを取得し、一つでも使用中なら取得済みの権利だけを戻す。内容は変更しない。
     for (auto position{groups.begin()}; position != groups.end(); ++position) {
         if (!position->second.TryAcquire()) {
@@ -282,8 +249,7 @@ size_t SlabPool::RemoveInactive() noexcept {
 }
 
 bool SlabPool::Clear() noexcept {
-    if (!registry_) { return true; }
-    auto& groups{registry_->groups};
+    auto& groups{registry_.groups};
     // 全IDを先に確認し、使用中なら取得した権利だけを戻す。部分的には解放しない。
     for (auto position{groups.begin()}; position != groups.end(); ++position) {
         if (!position->second.TryAcquire()) {
@@ -291,8 +257,9 @@ bool SlabPool::Clear() noexcept {
             return false;
         }
     }
-    // Groupのデストラクタで全Slabを解放し、mapのバケット領域と管理部も破棄する。
-    registry_.reset();
+    // 空のmapと交換し、登録に伴うノード・バケットと全Slabを解放する。
+    decltype(registry_.groups) empty{};
+    groups.swap(empty);
     return true;
 }
 

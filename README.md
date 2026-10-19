@@ -2,7 +2,9 @@
 
 外部で生成したコンポーネントのポインタを、数値IDごとに保持する非所有プールです。実体の生成・解放は利用側が担当します。
 
-ID管理はcpp内の`std::unordered_map<PoolId, Group>`が担当し、Groupをmapの要素として直接保持します。初回登録時に`InitialGroupCapacity`個のIDを想定してバケットをreserveします。既定値は64で、必要ならslab_pool.cpp冒頭の数値を変更します。GroupやSlab領域まで事前生成する設定ではありません。
+ID管理は`Registry`内の`std::unordered_map<PoolId, Group>`が担当し、Groupをmapの要素として直接保持します。Registry自体はSlabPoolの直接メンバーとして最初から保持し、make_uniqueによる個別生成は行いません。Registry・Groupの定義はヘッダー下部のprivate部分、関数の実装はcppにまとめています。
+
+初回登録時とClear後の再登録時に`InitialGroupCapacity`個のIDを想定してバケットをreserveします。既定値は64で、必要ならslab_pool.cpp冒頭の数値を変更します。GroupやSlab領域まで事前生成する設定ではありません。map・listの内部領域は通常どおり動的に確保します。
 
 IDが想定数を超えると登録時に再ハッシュすることがあります。Groupへのポインタは再ハッシュでも有効ですが、登録・Clearは全利用者の停止中に行います。全IDの処理順は登録順にはなりません。
 
@@ -39,7 +41,7 @@ auto& pool{slab::SlabPool::GetInstance()};
 
 `Clear()`は全IDのポインタ・登録情報・管理情報・予約とコミット済みの領域を解放します。コンポーネント実体は解放しません。Rangeが残っていれば何も変更せずfalseを返します。空Poolにも繰り返し呼べて、再利用時はRegisterからやり直します。
 
-Clearではmapを持つ管理部自体を破棄し、mapのバケット領域も解放します。Group内のlistが管理情報を破棄し、Regionのデストラクタが各Slabの予約・コミット済み領域を解放します。
+Clearでは内部のmapを空のmapと交換し、登録に伴って確保したノードとバケット領域を解放します。Group内のlistが管理情報を破棄し、Regionのデストラクタが各Slabの予約・コミット済み領域を解放します。Registry自体はメンバーとして残り、mapは空の初期状態へ戻ります。
 
 要素の取得にはRangeの範囲forを使います。`At()`による添字アクセスはありません。Rangeの破棄・Resetで走査権を解放し、その後は取得した参照やイテレータを利用しません。
 
