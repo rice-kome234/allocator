@@ -39,7 +39,7 @@ auto& pool{slab::SlabPool::GetInstance()};
 
 IDとクラスは利用側で一対一に対応させます。Enemy用のIDにはEnemyの実体を追加し、`GetRange<Enemy>(enemyId)`で走査してください。Poolは型情報を保持せず、Add・GetRangeとも実行時の型照合を行いません。異なる型を指定して走査することは未定義動作になります。Componentの継承条件とvolatileの禁止はコンパイル時に確認するため、実行時のコストはありません。
 
-未登録ID・使用中のID・nullptr・容量不足の検査は維持します。これらはIDと型の一意性では防げない失敗なので、従来どおりfalse・無効なRange・InvalidIndexで通知します。
+未登録ID・nullptr・容量不足や確保失敗は、従来どおりfalse・無効なRange・InvalidIndexで通知します。GetRange・Add・CommitAtFrameEndは同じIDが使用中なら待機し、取得できてから処理します。
 
 `RemoveInactive()`は変更フラグのあるIDだけを走査し、状態0のポインタを末尾と入れ替えて除去します。順序・添字は変わりますが、実体は移動・解放しません。
 
@@ -51,11 +51,19 @@ Clearでは内部のmapを空のmapと交換し、登録に伴って確保した
 
 ## 並列利用
 
-同じIDは同時に一つのRangeだけが利用できます。使用中の取得は待たずに失敗し、Rangeの破棄・`Reset()`後は別スレッドが取得できます。空IDでも取得成功ならboolはtrueです。
+同じIDは同時に一つのRangeだけが利用できます。GetRange・Add・CommitAtFrameEndは、同じIDが使用中なら`atomic::wait`で待ち、解放後に取得を再試行します。Rangeの破棄・`Reset()`や追加処理の終了時に、`notify_one()`で待機者へ通知します。空IDでも取得成功ならboolはtrueです。未登録IDへの操作は待機せず失敗します。
+
+内部の待機式`Acquire()`は`compare_exchange_weak`を繰り返します。失敗時に書き換わるexpectedは試行ごとにfalseへ戻し、CASの成功時に前の所有者の更新を受け取ります。先着順や待ち時間の上限は保証しません。所有者の解放を待つ排他処理なので、ロックフリーではありません。
+
+Rangeを保持したまま同じIDのGetRange・Add・CommitAtFrameEndを呼ぶと、自分の解放を待ち続けます。先にRangeを破棄・Resetしてから呼んでください。待機中のスレッドをjoinする場合も、先に自分のRangeを解放します。複数IDのRangeを同時に保持する場合は、全スレッドで取得順を統一します。
+
+待機後のGetRangeもID全体を返すため、各呼び出しはそれぞれ全件を走査します。同じIDの処理は直列となり、別IDは並列に処理できます。
 
 別IDは並列利用できます。`state`は普通のintなので、並列処理中はそのIDのRangeを持つ担当だけが実体を読み書きします。同じ実体を複数IDへ登録しないでください。参照・ポインタ・イテレータはRangeの解放前に使い終えます。
 
-Poolはスレッドを起動しません。登録・Clear・Poolの破棄は全利用者の停止中に行い、一括除去の前には外側で全ジョブの完了を待ちます。ClearはIDの管理情報も破棄するため、同時に新しいGetRange・Add・通知などを開始しないでください。
+Poolはスレッドを起動しません。登録・Clear・Poolの破棄は待機者を含む全利用者の停止中に行い、一括除去の前には外側で全ジョブの完了を待ちます。ClearはIDの管理情報も破棄するため、同時に新しいGetRange・Add・通知などを開始しないでください。
+
+Clear・RemoveInactiveは管理処理用の`TryAcquire()`を使い、使用中のIDがあれば待機せず失敗します。取得済みの権利を戻し、格納内容と変更フラグは維持します。これらの呼び出しで待機中のジョブの完了を代用することはできません。
 
 ## 容量設定
 

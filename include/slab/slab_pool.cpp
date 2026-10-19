@@ -78,10 +78,22 @@ bool SlabPool::Group::TryAcquire() noexcept {
     bool expected{};
     return inUse.compare_exchange_strong(expected, true, memory_order_acquire, memory_order_relaxed);
 }
-void SlabPool::Group::Release() noexcept { inUse.store(false, memory_order_release); }
+void SlabPool::Group::Acquire() noexcept {
+    for (;;) {
+        // CAS失敗時にはexpectedが書き換わるので、試行ごとにfalseへ戻す。
+        bool expected{};
+        if (inUse.compare_exchange_weak(expected, true, memory_order_acquire, memory_order_relaxed)) { return; }
+        // 既に解放済みなら即座に戻る。待機後も、他の取得者と競合するためCASを再試行する。
+        inUse.wait(true, memory_order_relaxed);
+    }
+}
+void SlabPool::Group::Release() noexcept {
+    inUse.store(false, memory_order_release);
+    inUse.notify_one();
+}
 
 SlabPool::Group::Access::Access(Group* group) noexcept {
-    if (group != nullptr && group->TryAcquire()) { owned = group; }
+    if (group != nullptr) { group->Acquire(); owned = group; }
 }
 SlabPool::Group::Access::~Access() noexcept { if (owned != nullptr) { owned->Release(); } }
 SlabPool::Group::Access::operator bool() const noexcept { return owned != nullptr; }
@@ -279,9 +291,8 @@ bool SlabPool::Clear() noexcept {
 
 SlabPool::View SlabPool::AcquireView(PoolId id) const noexcept {
     auto* group{Find(id)};
-    if (group == nullptr || !group->TryAcquire()) {
-        return {};
-    }
+    if (group == nullptr) { return {}; }
+    group->Acquire();
     return {ReadChunk(group->chunks.cbegin(), group->chunks.cend()), group->count, group};
 }
 void SlabPool::ReleaseView(View& view) noexcept {

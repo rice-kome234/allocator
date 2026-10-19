@@ -40,8 +40,10 @@ protected:
  * @brief ポインタを連続配置する非所有プール。実体のコピー・移動・解放は行わない。
  * @details Componentのstateを直接読み、0の要素を走査から除外する。
  * 全利用者の完了後に RemoveInactive で末尾ポインタを移して穴を詰める。
- * @pre Register・Clear・破棄は全利用者の停止中だけ行う。PoolはRangeより長く生存すること。
- * 同じIDは同時に一つのRangeだけが取得でき、別IDは並列利用できる。
+ * @pre Register・Clear・破棄は待機者を含む全利用者の停止中だけ行う。PoolはRangeより長く生存すること。
+ * 同じIDは同時に一つのRangeだけが取得でき、使用中なら解放を待つ。別IDは並列利用できる。
+ * Rangeを保持したまま同じIDのGetRange・Add・CommitAtFrameEndを呼ばないこと。
+ * 複数IDを同時に保持する場合は全スレッドで取得順を統一し、循環待ちを作らないこと。
  * 実体を複数IDで共有したり、担当外の実体へ並列アクセスしたりしない。
  * 取得した参照・ポインタ・イテレータはRangeの解放前に使い終えること。
  */
@@ -112,20 +114,24 @@ public:
      * @brief ポインタを1件末尾に追加し、格納添字を返す。実体はコピーしない。
      * @pre IDに対応する型の実体を渡すこと。入力の実体は他の処理で使用しない。
      * 同じ実体を複数IDへ登録しない。派生型の照合と重複検査は行わない。
-     * @details nullptr・未登録ID・容量不足・同じIDの使用中はInvalidIndex。
+     * 呼び出し側が同じIDのRangeを保持していないこと。
+     * @details 同じIDが使用中なら解放を待ってから追加する。先着順は保証しない。
+     * nullptr・未登録ID・容量不足や確保失敗はInvalidIndex。
      * 別IDの追加は並列に呼べる。状態0のポインタも追加できるが走査では除外する。
      */
     [[nodiscard]]
     Index Add(PoolId id, Component* pointer) noexcept;
 
     /**
-     * @brief ID全体の走査権を一度だけ試行して取得する。未登録・使用中なら無効な範囲。
+     * @brief ID全体の走査権を取得する。使用中なら解放を待ち、未登録なら無効な範囲を返す。
      * @tparam T Componentをpublicかつ非virtualで一意に継承した型。constは可、volatileは不可。
      * @pre TはIDに対応する実体の型を指定すること。実行時の型照合は行わない。
+     * 呼び出し側が同じIDのRangeを保持していないこと。
      * @details bool変換で取得成功を確認する。要素0件でも取得成功ならtrue。
      * Rangeの破棄・Resetまで同じIDを排他し、release/acquireで次の利用者へ引き継ぐ。
      * 範囲forを最後まで回しても、名前付きRangeが残っていれば走査権は保持する。
-     * @note スレッドは生成しない。待機や再試行も行わない。Rangeはコピー不可・移動可。
+     * @note atomic::waitで待機して取得を再試行する。先着順や取得までの時間は保証しない。
+     * スレッドは生成しない。Rangeはコピー不可・移動可。
      */
     template<class T>
     [[nodiscard]]
@@ -154,19 +160,25 @@ public:
      * @return 全IDの除去数の合計。未登録・全フラグなしなら0。
      * いずれかのIDが使用中なら、全IDの内容と変更フラグを維持してInvalidIndexを返す。
      * @details フラグがないIDのポインタ配列は走査しない。処理したIDのフラグは解除する。
-     * @pre 全IDの走査・状態更新・通知・取得済み参照の利用が完了していること。自動で待機しない。
+     * @pre 待機中の操作も含め、全IDの走査・状態更新・通知・取得済み参照の利用が完了していること。
+     * 自動で待機しない。
      * @note 順序と添字は変わる。実体の位置は変わらず、deleteも行わない。
      */
     [[nodiscard]]
     size_t RemoveInactive() noexcept;
 
-    /** @brief 全利用者の完了後、空きが閾値以下ならcommitBytesの1単位を追加。閾値0なら何もしない。 */
+    /**
+     * @brief フレーム末尾で空きが閾値以下ならcommitBytesの1単位を追加。閾値0なら何もしない。
+     * @details 同じIDが使用中なら解放を待つ。未登録ID・サイズ超過・確保失敗はfalse。
+     * @pre 呼び出し側が同じIDのRangeを保持していないこと。
+     */
     [[nodiscard]]
     bool CommitAtFrameEnd(PoolId id) noexcept;
 
     /**
      * @brief 全IDの登録・ポインタ・管理情報を消し、予約とコミットを含む全格納領域を解放する。
-     * @pre 他スレッドからのPool操作を停止してから呼ぶ。並列呼び出しとの同期は行わない。
+     * @pre 待機中の操作も含め、他スレッドからのPool操作を停止してから呼ぶ。
+     * 並列呼び出しとの同期は行わない。
      * @return 全解放できればtrue。使用中のIDがあれば何も解放せずfalse。
      * @details 空Poolにも繰り返し呼べる。再利用時はRegisterからやり直す。
      * Registry自体はメンバーとして残し、mapを空の初期状態へ戻す。
@@ -225,9 +237,10 @@ private:
     static bool CommitGroup(Group& group, size_t minimumCapacity) noexcept;
 
     /**
-     * @brief ID全体の走査権を一度だけ取得し、Range用の参照情報を返す。
-     * @return 成功時はGroup・先頭区間・状態0を含む格納数。未登録・使用中なら空のView。
-     * @details 要素0件でも取得に成功する。待機・再試行・型照合は行わない。
+     * @brief ID全体の走査権を待機して取得し、Range用の参照情報を返す。
+     * @return 成功時はGroup・先頭区間・状態0を含む格納数。未登録なら空のView。
+     * @pre 呼び出し側が同じIDのRangeを保持していないこと。
+     * @details 使用中ならAcquireで待機する。要素0件でも取得に成功する。型照合は行わない。
      * @note constでもGroupの走査権は更新する。取得後はRangeを通じてReleaseViewで解放する。
      */
     [[nodiscard]]
@@ -267,7 +280,7 @@ private:
         size_t capacity{}; ///< コミット済み領域に格納できるポインタ数。
         size_t reservedBytes{}; ///< 全Regionの予約バイト数。未コミット部分も含む。
         atomic<bool> mayContainInactive{}; ///< 状態0が含まれる可能性を表す変更通知フラグ。
-        atomic<bool> inUse{}; ///< Rangeまたは即時操作がこのIDを使用している間はtrue。
+        atomic<bool> inUse{}; ///< RangeまたはPool操作がこのIDを使用している間はtrue。待機と通知にも使う。
         list<Region> regions{}; ///< 予約領域を所有し、各Regionの破棄でVirtualFreeする。
         list<Chunk> chunks{}; ///< コミット区間の管理情報を所有する。
 
@@ -276,16 +289,23 @@ private:
         /** @brief 管理情報と仮想領域を解放する。実体の解放は外部の所有者が行う。 */
         ~Group() noexcept;
 
-        /** @brief IDの走査権を一度だけ取得する。使用中なら待たずに失敗する。 */
+        /** @brief Clear・RemoveInactive用に走査権を一度だけ取得する。使用中なら待たずに失敗する。 */
         [[nodiscard]]
         bool TryAcquire() noexcept;
-        /** @brief 走査権を解放し、次の利用者へ更新内容を引き継ぐ。 */
+
+        /**
+         * @brief IDの走査権を取得する。使用中ならatomic::waitで待機して再試行する。
+         * @pre 同じIDの走査権を自分が保持していないこと。待機中もGroupが生存すること。
+         * @note 先着順・取得までの時間は保証しない。所有者の解放を待つ排他処理であり、ロックフリーではない。
+         */
+        void Acquire() noexcept;
+        /** @brief 走査権を解放し、更新内容を次の利用者へ引き継いで待機者へ通知する。 */
         void Release() noexcept;
 
-        /** @brief 即時に完了する操作用の排他ガード。破棄時に走査権を解放する。 */
+        /** @brief Add・CommitAtFrameEnd用の待機式排他ガード。破棄時に走査権を解放する。 */
         struct Access {
             Group* owned{}; ///< 走査権を取得したGroup。未取得ならnullptr。
-            /** @brief 走査権を一度だけ取得する。nullptrまたは使用中なら未取得のままにする。 */
+            /** @brief 走査権を待機して取得する。nullptrの場合だけ未取得のままにする。 */
             explicit Access(Group* group) noexcept;
             /** @brief 走査権の二重解放を防ぐためコピーは禁止する。 */
             Access(const Access&) = delete;

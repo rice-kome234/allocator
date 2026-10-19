@@ -45,9 +45,10 @@ int main() {
         }
     }
 
-    // 3. ID全体の走査権を取得する。別IDは別スレッドで同時に処理できる。
+    // 3. ID全体の走査権を取得する。同じIDが使用中なら待ち、別IDは並列に処理できる。
     {
         auto enemies{pool.GetRange<Enemy>(enemyId)};
+        // 使用中は内部で待機するため、無効なRangeは未登録IDを表す。
         if (!enemies) {
             cerr << "Enemyの走査権を取得できませんでした。\n";
             return 1;
@@ -67,7 +68,8 @@ int main() {
             return 1;
         }
         cout << "利用可能なEnemy: " << enemies.size() << "個\n";
-    } // Rangeの破棄で走査権を解放。取得した参照もここまでで使い終える。
+        // このRangeを保持したまま同じIDのGetRange・Add・CommitAtFrameEndは呼ばない。
+    } // Rangeの破棄で走査権を解放し、待機者へ通知。取得した参照もここまでで使い終える。
 
     // 5. 全IDの処理が終わったフレーム末尾に、状態0のポインタだけを除去する。
     const auto removed{pool.RemoveInactive()};
