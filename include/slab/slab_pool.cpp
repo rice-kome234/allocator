@@ -119,7 +119,11 @@ bool SlabPool::Register(PoolId id, const Options& options) noexcept {
     group.reservationStep = reservationStep;
     group.freeThreshold = options.freeThreshold;
     group.preTouch = options.preTouch;
-    if (!ReserveGroup(group, options.reservedCapacity) || !CommitGroup(group, options.initialCapacity)) {
+    bool prepared{ReserveGroup(group)};
+    while (prepared && group.capacity < options.initialCapacity) {
+        prepared = CommitGroup(group);
+    }
+    if (!prepared) {
         // Groupのデストラクタが、途中まで準備した領域も解放する。
         groups.erase(id);
         return false;
@@ -127,13 +131,9 @@ bool SlabPool::Register(PoolId id, const Options& options) noexcept {
     return true;
 }
 
-bool SlabPool::ReserveGroup(Group& group, size_t minimumCapacity) noexcept {
-    if (minimumCapacity > MaximumBytes / PointerBytes) { return false; }
-    const auto requestedBytes{minimumCapacity * PointerBytes};
-    if (requestedBytes <= group.reservedBytes) { return true; }
-    size_t bytes{};
-    if (!RoundUp(max(requestedBytes - group.reservedBytes, group.reservationStep), GetPageBytes(), bytes) ||
-        bytes > MaximumBytes - group.reservedBytes) { return false; }
+bool SlabPool::ReserveGroup(Group& group) noexcept {
+    const auto bytes{group.reservationStep};
+    if (bytes > MaximumBytes - group.reservedBytes) { return false; }
     auto& region{group.regions.emplace_back()};
     void* address{VirtualAlloc(nullptr, bytes, MEM_RESERVE, PAGE_NOACCESS)};
     if (address == nullptr) { group.regions.pop_back(); return false; }
@@ -143,13 +143,14 @@ bool SlabPool::ReserveGroup(Group& group, size_t minimumCapacity) noexcept {
     return true;
 }
 
-bool SlabPool::CommitGroup(Group& group, size_t minimumCapacity) noexcept {
-    if (minimumCapacity <= group.capacity) { return true; }
-    if (!ReserveGroup(group, minimumCapacity)) { return false; }
-    size_t additionalBytes{};
-    if (!RoundUp((minimumCapacity - group.capacity) * PointerBytes, group.commitStep, additionalBytes)) { return false; }
-    additionalBytes = min(additionalBytes, group.reservedBytes - group.capacity * PointerBytes);
-    const auto targetCapacity{group.capacity + additionalBytes / PointerBytes};
+bool SlabPool::CommitGroup(Group& group) noexcept {
+    const auto committedBytes{group.capacity * PointerBytes};
+    if (group.commitStep > MaximumBytes - committedBytes) { return false; }
+    const auto targetBytes{committedBytes + group.commitStep};
+    while (group.reservedBytes < targetBytes) {
+        if (!ReserveGroup(group)) { return false; }
+    }
+    const auto targetCapacity{targetBytes / PointerBytes};
     for (auto& region : group.regions) {
         if (group.capacity >= targetCapacity) { break; }
         const auto available{region.bytes - region.committed};
@@ -180,9 +181,7 @@ bool SlabPool::CommitAtFrameEnd(PoolId id) noexcept {
     Group::Access access{group};
     if (!access) { return false; }
     if (group->freeThreshold == 0 || group->capacity - group->count > group->freeThreshold) { return true; }
-    const auto additionalCount{group->commitStep / PointerBytes};
-    if (additionalCount > MaximumBytes / PointerBytes - group->capacity) { return false; }
-    return CommitGroup(*group, group->capacity + additionalCount);
+    return CommitGroup(*group);
 }
 
 SlabPool::Slice SlabPool::ReadChunk(ChunkIterator chunk) noexcept {
@@ -206,7 +205,7 @@ SlabPool::Index SlabPool::Add(PoolId id, Component* pointer) noexcept {
     if (!access) { return InvalidIndex; }
     const auto index{group->count};
     if (index == group->capacity &&
-        (group->freeThreshold != 0 || !CommitGroup(*group, index + 1))) { return InvalidIndex; }
+        (group->freeThreshold != 0 || !CommitGroup(*group))) { return InvalidIndex; }
     const auto slice{Locate(*group, index)};
     *slice.data = pointer;
     ++group->count;

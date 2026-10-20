@@ -59,13 +59,13 @@ public:
 
     /** @brief 容量と閾値はコンポーネント数で指定する。1個につきComponent*を1枠保持し、実際の確保量はOSページ単位へ切り上げる。 */
     struct Options {
-        /** @brief 登録時にコミットする最低個数。追加コミット単位へ切り上げ、予約量を上限とする。0なら予約のみ。 */
+        /** @brief 登録時にコミットする最低個数。追加コミットを必要回数繰り返す。0なら予約のみ。 */
         size_t initialCapacity{64};
 
         /** @brief 最初と不足時に予約する最低個数。1以上かつinitialCapacity以上を指定する。 */
         size_t reservedCapacity{65536};
 
-        /** @brief 追加コミットの基準個数。1以上を指定し、ポインタのバイト数へ変換してページ単位に切り上げる。自動補充時は予約済みの残量が上限。 */
+        /** @brief 追加コミットの基準個数。1以上を指定し、ポインタのバイト数へ変換してページ単位に切り上げる。予約が不足すれば補充する。 */
         size_t commitCount{512};
 
         /** @brief コミット時に新しいページへ書き込む。 */
@@ -235,25 +235,26 @@ private:
     Group* Find(PoolId id) const noexcept;
 
     /**
-     * @brief Group全体で最低個数を格納できるよう仮想アドレス領域を予約する。
-     * @param minimumCapacity 既存の予約分を含む、必要なポインタの総数。
+     * @brief GroupのreservationStepバイト分を、新しい仮想アドレス領域として追加予約する。
      * @pre Groupの初期化中、または呼び出し元が走査権を保持していること。
-     * @return 予約済み容量で足りるか、追加予約に成功すればtrue。サイズ超過・予約失敗はfalse。
-     * @note コミットは行わない。既存領域を移動せず、必要ならRegionを追加する。
+     * reservationStepは登録時に検証済みの、正のページ単位のバイト数であること。
+     * @return 追加予約に成功すればtrue。合計サイズの上限超過・予約失敗はfalse。
+     * @note 呼ぶたびにRegionを一つ追加する。コミットや既存領域の移動は行わない。
      */
     [[nodiscard]]
-    static bool ReserveGroup(Group& group, size_t minimumCapacity) noexcept;
+    static bool ReserveGroup(Group& group) noexcept;
 
     /**
-     * @brief Group全体で最低個数を書き込めるよう、不足分をコミットする。
-     * @param minimumCapacity 既存のコミット分を含む、必要なポインタの総数。
+     * @brief GroupのcommitStepバイト分を追加コミットする。初期確保と通常の補充で共用する。
      * @pre Groupの初期化中、または呼び出し元が走査権を保持していること。
-     * @return 必要容量を準備できればtrue。サイズ超過・予約やコミットの失敗はfalse。
-     * @details 必要なら予約も追加する。ポインタ配列の寿命を開始し、preTouchもここで行う。
+     * commitStepは登録時に検証済みの、正のページ単位のバイト数であること。
+     * @return 1単位分のコミットが完了すればtrue。サイズ超過・予約やコミットの失敗はfalse。
+     * @details 予約が足りるまでReserveGroupを呼ぶ。領域をまたぐ場合は分けてコミットする。
+     * ポインタ配列の寿命を開始し、preTouchもここで行う。
      * @note 途中で失敗しても、それまで成功した予約・コミットはGroupに保持する。
      */
     [[nodiscard]]
-    static bool CommitGroup(Group& group, size_t minimumCapacity) noexcept;
+    static bool CommitGroup(Group& group) noexcept;
 
     /**
      * @brief ID全体の走査権を待機して取得し、Range用の参照情報を返す。
