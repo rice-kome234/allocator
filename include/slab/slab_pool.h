@@ -191,12 +191,11 @@ private:
     /** @brief cpp側で定義するChunkのlistをたどる。Rangeは走査権の寿命中だけ参照する。 */
     using ChunkIterator = list<Chunk>::const_iterator;
 
-    /** @brief 一つのコミット区間にあるComponent*配列を参照する。 */
+    /** @brief 一つのコミット区間にあるComponent*配列を参照する。走査の終端は残り格納数で判断する。 */
     struct Slice {
         Component** data{}; ///< 参照開始位置。空のSliceではnullptr。
         size_t count{}; ///< 参照開始位置から区間末尾までの枠数。未使用枠も含む。
         ChunkIterator next{}; ///< 現在の区間を使い切った後に参照するChunk。
-        ChunkIterator end{}; ///< 同じGroupのChunk一覧の終端。
     };
     /**
      * @brief 取得済みの走査権と格納領域をRangeへ渡す内部情報。
@@ -254,12 +253,12 @@ private:
     static void ReleaseView(View& view) noexcept;
 
     /**
-     * @brief 指定Chunkのポインタ配列と次の区間をSliceとして返す。終端なら空のSlice。
-     * @pre chunkとendは同じGroupの有効なイテレータであり、走査権を保持していること。
-     * @note 枠数には未使用枠も含む。RangeはViewの格納数を上限にして走査する。
+     * @brief 有効なChunkのポインタ配列と次の区間をSliceとして返す。
+     * @pre chunkは終端ではない有効なイテレータであり、走査権を保持していること。
+     * @note 終端判定は呼び出し側が格納数で行う。枠数には未使用枠も含むため、残り格納数を上限に走査する。
      */
     [[nodiscard]]
-    static Slice ReadChunk(ChunkIterator chunk, ChunkIterator end) noexcept;
+    static Slice ReadChunk(ChunkIterator chunk) noexcept;
 
     /**
      * @brief Group内の通算添字を含むChunkを検索し、その枠から区間末尾までを返す。
@@ -389,13 +388,13 @@ public:
             if (remaining_ == 0) { slice_ = {}; }
             SkipInactive();
         }
-        /** @brief 状態を判定せず1枠進む。コミット区間の末尾なら次の区間へ移る。 */
+        /** @brief 状態を判定せず1枠進む。格納数を使い切れば終了し、残っている場合だけ次の区間へ移る。 */
         void Advance() noexcept {
             --remaining_;
             if (remaining_ == 0) { slice_ = {}; }
             else {
                 --slice_.count;
-                if (slice_.count == 0) { slice_ = SlabPool::ReadChunk(slice_.next, slice_.end); }
+                if (slice_.count == 0) { slice_ = SlabPool::ReadChunk(slice_.next); }
                 else { ++slice_.data; }
             }
         }

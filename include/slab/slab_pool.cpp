@@ -200,16 +200,15 @@ bool SlabPool::CommitAtFrameEnd(PoolId id) noexcept {
     return CommitGroup(*group, group->capacity + additionalCount);
 }
 
-SlabPool::Slice SlabPool::ReadChunk(ChunkIterator chunk, ChunkIterator end) noexcept {
-    if (chunk == end) { return {}; }
-    return {chunk->data, chunk->capacity, next(chunk), end};
+SlabPool::Slice SlabPool::ReadChunk(ChunkIterator chunk) noexcept {
+    return {chunk->data, chunk->capacity, next(chunk)};
 }
 SlabPool::Slice SlabPool::Locate(const Group& group, Index index) noexcept {
     const auto end{group.chunks.cend()};
     for (auto chunk{group.chunks.cbegin()}; chunk != end; ++chunk) {
         if (index >= chunk->first && index - chunk->first < chunk->capacity) {
             const auto offset{index - chunk->first};
-            return {chunk->data + offset, chunk->capacity - offset, next(chunk), end};
+            return {chunk->data + offset, chunk->capacity - offset, next(chunk)};
         }
     }
     return {};
@@ -293,7 +292,9 @@ SlabPool::View SlabPool::AcquireView(PoolId id) const noexcept {
     auto* group{Find(id)};
     if (group == nullptr) { return {}; }
     group->Acquire();
-    return {ReadChunk(group->chunks.cbegin(), group->chunks.cend()), group->count, group};
+    // 空のIDではChunkを参照しない。走査権は保持し、有効な空Rangeとして返す。
+    if (group->count == 0) { return {{}, 0, group}; }
+    return {ReadChunk(group->chunks.cbegin()), group->count, group};
 }
 void SlabPool::ReleaseView(View& view) noexcept {
     auto* group{view.group};
