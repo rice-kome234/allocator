@@ -186,12 +186,18 @@ bool SlabPool::CommitGroup(Group& group) noexcept {
     return true;
 }
 
-bool SlabPool::CommitAtFrameEnd(PoolId id) noexcept {
-    auto* group{Find(id)};
-    Group::Access access{group};
-    if (!access) { return false; }
-    if (group->freeThreshold == 0 || group->capacity - group->count > group->freeThreshold) { return true; }
-    return CommitGroup(*group);
+bool SlabPool::CommitAtFrameEnd() noexcept {
+    bool completed{true};
+    for (auto& entry : registry_.groups) {
+        auto& group{entry.second};
+        // 閾値は登録後に変わらない。自動補充のIDは走査権も取得せずに除外する。
+        if (group.freeThreshold == 0) { continue; }
+        Group::Access access{&group};
+        if (group.capacity - group.count > group.freeThreshold) { continue; }
+        // 一つのIDで失敗しても、残りのIDの補充は続ける。
+        if (!CommitGroup(group)) { completed = false; }
+    }
+    return completed;
 }
 
 SlabPool::Slice SlabPool::ReadChunk(ChunkIterator chunk) noexcept {

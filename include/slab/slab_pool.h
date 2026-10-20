@@ -42,7 +42,8 @@ protected:
  * 全利用者の完了後に RemoveInactive で末尾ポインタを移して穴を詰める。
  * @pre Register・Clear・破棄は待機者を含む全利用者の停止中だけ行う。PoolはRangeより長く生存すること。
  * 同じIDは同時に一つのRangeだけが取得でき、使用中なら解放を待つ。別IDは並列利用できる。
- * Rangeを保持したまま同じIDのGetRange・Add・CommitAtFrameEndを呼ばないこと。
+ * Rangeを保持したまま同じIDのGetRange・Addを呼ばないこと。
+ * CommitAtFrameEndは補充対象IDのRangeを解放してから呼ぶこと。
  * 複数IDを同時に保持する場合は全スレッドで取得順を統一し、循環待ちを作らないこと。
  * 実体を複数IDで共有したり、担当外の実体へ並列アクセスしたりしない。
  * 取得した参照・ポインタ・イテレータはRangeの解放前に使い終えること。
@@ -175,13 +176,16 @@ public:
     size_t RemoveInactive() noexcept;
 
     /**
-     * @brief フレーム末尾で空きが閾値以下ならcommitCountをページ単位に切り上げた容量を追加。閾値0なら何もしない。
-     * @details 同じIDが使用中なら解放を待つ。未登録ID・サイズ超過・確保失敗はfalse。
+     * @brief 全IDを確認し、空きが閾値以下ならcommitCountをページ単位に切り上げた容量を追加する。
+     * @details freeThresholdが0のIDは走査権を取得せず、補充もしない。
+     * 対象IDが使用中なら解放を待ち、1IDずつ走査権を取得・解放する。
      * 補充が必要なとき、追加予約を禁止している場合は予約残量までコミットし、残量が0ならfalse。
-     * @pre 呼び出し側が同じIDのRangeを保持していないこと。
+     * @return 必要な全補充が成功、または補充不要ならtrue。空Poolでもtrue。
+     * 一つでも容量上限・確保失敗があればfalse。他のIDの補充は続け、成功済みの確保は保持する。
+     * @pre 呼び出し側がfreeThresholdが1以上のIDのRangeを保持していないこと。
      */
     [[nodiscard]]
-    bool CommitAtFrameEnd(PoolId id) noexcept;
+    bool CommitAtFrameEnd() noexcept;
 
     /**
      * @brief 全IDの登録・ポインタ・管理情報を消し、予約とコミットを含む全格納領域を解放する。
@@ -310,7 +314,7 @@ private:
         size_t count{}; ///< 状態0を含む格納済みポインタ数。
         size_t capacity{}; ///< コミット済み領域に格納できるポインタ数。
         size_t reservedBytes{}; ///< 全Regionの予約バイト数。未コミット部分も含む。
-        atomic<bool> mayContainInactive{}; ///< 状態0が含まれる可能性を表す変更通知フラグ。
+        atomic<bool> mayContainInactive{}; ///< 状態0の可能性を表すフラグ。走査権を取得しない複数スレッドからの通知に対応する。
         atomic<bool> inUse{}; ///< RangeまたはPool操作がこのIDを使用している間はtrue。待機と通知にも使う。
         list<Region> regions{}; ///< 予約領域を所有し、各Regionの破棄でVirtualFreeする。
         list<Chunk> chunks{}; ///< コミット区間の管理情報を所有する。
