@@ -8,17 +8,7 @@
 #include <new>
 
 namespace slab {
-namespace {
-/** @brief サイズ計算とポインタ差分で扱うバイト数の上限。 */
-constexpr size_t MaximumBytes{static_cast<size_t>(PTRDIFF_MAX)};
-/** @brief 格納するポインタのサイズ。対象構成に合わせてコンパイル時に決まる。 */
-constexpr size_t PointerBytes{sizeof(Component*)};
-/** @brief 初回登録時にmapのバケットを事前確保する想定ID数。Groupの実体は登録時に作る。 */
-constexpr size_t InitialGroupCapacity{64};
-
-/** @brief OSの通常ページサイズを初回だけ取得し、全Poolで共有する。走査時は呼ばない。 */
-[[nodiscard]]
-size_t GetPageBytes() noexcept {
+size_t SlabPool::GetPageBytes() noexcept {
     static const size_t bytes{[]() noexcept {
         SYSTEM_INFO information{};
         GetSystemInfo(&information);
@@ -27,14 +17,7 @@ size_t GetPageBytes() noexcept {
     return bytes;
 }
 
-/**
- * @brief valueをunitの倍数へ切り上げる。既に倍数なら値を変えない。
- * @pre unitは正数で、valueとunitはMaximumBytes以下であること。
- * @param result 成功時の切り上げ結果。falseの場合は利用しないこと。
- * @return 切り上げ結果がMaximumBytes以下ならtrue。上限を超える場合はfalse。
- */
-[[nodiscard]]
-bool RoundUp(size_t value, size_t unit, size_t& result) noexcept {
+bool SlabPool::RoundUp(size_t value, size_t unit, size_t& result) noexcept {
     const auto remainder{value % unit};
     result = value;
     if (remainder == 0) { return true; }
@@ -42,7 +25,6 @@ bool RoundUp(size_t value, size_t unit, size_t& result) noexcept {
     if (value > MaximumBytes - extra) { return false; }
     result += extra;
     return true;
-}
 }
 
 /** @brief 一度に予約した仮想領域。コミットを増やしても先頭アドレスは不変。 */
@@ -118,23 +100,22 @@ SlabPool::Group* SlabPool::Find(PoolId id) const noexcept {
 }
 
 bool SlabPool::Register(PoolId id, const Options& options) noexcept {
-    if (Find(id) != nullptr || options.reservedCapacity == 0 || options.commitBytes == 0 ||
-        options.initialCapacity > options.reservedCapacity ||
-        options.reservedCapacity > MaximumBytes / PointerBytes || options.commitBytes > MaximumBytes ||
-        options.freeThreshold > MaximumBytes / PointerBytes) { return false; }
-    size_t commitStep{};
-    size_t reservationStep{};
     const auto pageBytes{GetPageBytes()};
-    if (!RoundUp(options.commitBytes, pageBytes, commitStep) ||
-        !RoundUp(options.reservedCapacity * PointerBytes, pageBytes, reservationStep)) { return false; }
+    const auto maximumPages{MaximumBytes / pageBytes};
+    if (Find(id) != nullptr || options.reservedPages == 0 || options.commitPages == 0 ||
+        options.initialPages > options.reservedPages ||
+        options.reservedPages > maximumPages || options.commitPages > maximumPages ||
+        options.freeThreshold > MaximumBytes / PointerBytes) { return false; }
     auto& groups{registry_.groups};
     if (groups.empty()) { groups.reserve(InitialGroupCapacity); }
     // 登録済みIDは冒頭で除外済み。operator[]で空のGroupを作って設定する。
     auto& group{groups[id]};
-    group.options = options;
-    group.commitStep = commitStep;
-    group.reservationStep = reservationStep;
-    if (!ReserveGroup(group, options.reservedCapacity) || !CommitGroup(group, options.initialCapacity)) {
+    group.commitStep = options.commitPages * pageBytes;
+    group.reservationStep = options.reservedPages * pageBytes;
+    group.freeThreshold = options.freeThreshold;
+    group.preTouch = options.preTouch;
+    if (!ReserveGroup(group, group.reservationStep / PointerBytes) ||
+        !CommitGroup(group, options.initialPages * pageBytes / PointerBytes)) {
         // Groupのデストラクタが、途中まで準備した領域も解放する。
         groups.erase(id);
         return false;
@@ -174,7 +155,7 @@ bool SlabPool::CommitGroup(Group& group, size_t minimumCapacity) noexcept {
         void* address{reinterpret_cast<void*>(region.address + region.committed)};
         void* committed{VirtualAlloc(address, bytes, MEM_COMMIT, PAGE_READWRITE)};
         if (committed == nullptr) { group.chunks.pop_back(); return false; }
-        if (group.options.preTouch) {
+        if (group.preTouch) {
             const auto pageBytes{GetPageBytes()};
             for (size_t offset{}; offset < bytes; offset += pageBytes) {
                 *(static_cast<volatile byte*>(committed) + offset) = byte{};
@@ -194,7 +175,7 @@ bool SlabPool::CommitAtFrameEnd(PoolId id) noexcept {
     auto* group{Find(id)};
     Group::Access access{group};
     if (!access) { return false; }
-    if (group->options.freeThreshold == 0 || group->capacity - group->count > group->options.freeThreshold) { return true; }
+    if (group->freeThreshold == 0 || group->capacity - group->count > group->freeThreshold) { return true; }
     const auto additionalCount{group->commitStep / PointerBytes};
     if (additionalCount > MaximumBytes / PointerBytes - group->capacity) { return false; }
     return CommitGroup(*group, group->capacity + additionalCount);
@@ -221,7 +202,7 @@ SlabPool::Index SlabPool::Add(PoolId id, Component* pointer) noexcept {
     if (!access) { return InvalidIndex; }
     const auto index{group->count};
     if (index == group->capacity &&
-        (group->options.freeThreshold != 0 || !CommitGroup(*group, index + 1))) { return InvalidIndex; }
+        (group->freeThreshold != 0 || !CommitGroup(*group, index + 1))) { return InvalidIndex; }
     const auto slice{Locate(*group, index)};
     *slice.data = pointer;
     ++group->count;

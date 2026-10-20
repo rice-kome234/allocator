@@ -57,16 +57,16 @@ public:
     using Index = size_t;
     static constexpr Index InvalidIndex{numeric_limits<Index>::max()};
 
-    /** @brief 個数はポインタ数、バイト数はポインタ格納領域のサイズ。 */
+    /** @brief 格納領域はOSの通常ページ数で指定する。freeThresholdだけはポインタ数。 */
     struct Options {
-        /** @brief 登録時にコミットする最低個数。0なら予約のみ。 */
-        size_t initialCapacity{64};
+        /** @brief 登録時にコミットする最低ページ数。commitPages単位へ切り上げ、予約量を上限とする。0なら予約のみ。 */
+        size_t initialPages{1};
 
-        /** @brief 最初と不足時に予約する最低個数。 */
-        size_t reservedCapacity{65536};
+        /** @brief 最初と不足時に予約する最低ページ数。1以上かつinitialPages以上を指定する。 */
+        size_t reservedPages{128};
 
-        /** @brief 追加コミット量。OSページ単位へ切り上げる。 */
-        size_t commitBytes{64 * 1024};
+        /** @brief 追加コミットのページ数。1以上を指定する。自動補充時は予約済みの残量が上限。 */
+        size_t commitPages{1};
 
         /** @brief コミット時に新しいページへ書き込む。 */
         bool preTouch{true};
@@ -168,7 +168,7 @@ public:
     size_t RemoveInactive() noexcept;
 
     /**
-     * @brief フレーム末尾で空きが閾値以下ならcommitBytesの1単位を追加。閾値0なら何もしない。
+     * @brief フレーム末尾で空きが閾値以下ならcommitPagesページ分を追加。閾値0なら何もしない。
      * @details 同じIDが使用中なら解放を待つ。未登録ID・サイズ超過・確保失敗はfalse。
      * @pre 呼び出し側が同じIDのRangeを保持していないこと。
      */
@@ -188,6 +188,26 @@ public:
     bool Clear() noexcept;
 
 private:
+    /** @brief サイズ計算とポインタ差分で扱うバイト数の上限。 */
+    static constexpr size_t MaximumBytes{static_cast<size_t>(PTRDIFF_MAX)};
+    /** @brief 格納するポインタのサイズ。対象構成に合わせてコンパイル時に決まる。 */
+    static constexpr size_t PointerBytes{sizeof(Component*)};
+    /** @brief 初回登録時にmapのバケットを事前確保する想定ID数。 */
+    static constexpr size_t InitialGroupCapacity{64};
+
+    /** @brief OSの通常ページサイズを初回だけ取得し、全Poolで共有する。走査時は呼ばない。 */
+    [[nodiscard]]
+    static size_t GetPageBytes() noexcept;
+
+    /**
+     * @brief valueをunitの倍数へ切り上げる。既に倍数なら値を変えない。
+     * @pre unitは正数で、valueとunitはMaximumBytes以下であること。
+     * @param result 成功時の切り上げ結果。falseの場合は利用しないこと。
+     * @return 切り上げ結果がMaximumBytes以下ならtrue。上限を超える場合はfalse。
+     */
+    [[nodiscard]]
+    static bool RoundUp(size_t value, size_t unit, size_t& result) noexcept;
+
     /** @brief cpp側で定義するChunkのlistをたどる。Rangeは走査権の寿命中だけ参照する。 */
     using ChunkIterator = list<Chunk>::const_iterator;
 
@@ -272,9 +292,10 @@ private:
     // 内部型の定義。直接メンバーとして保持するため、必要な型情報をここへまとめる。
     /** @brief ID単位の格納領域と走査権。型情報は保持せず、コンポーネント実体は所有しない。 */
     struct Group {
-        Options options{}; ///< 登録時に指定された容量と補充条件。
-        size_t commitStep{}; ///< OSページ単位に切り上げた追加コミット量。単位はバイト。
-        size_t reservationStep{}; ///< OSページ単位に切り上げた追加予約の最低量。単位はバイト。
+        size_t commitStep{}; ///< commitPagesを登録時にバイト数へ変換した追加コミット量。
+        size_t reservationStep{}; ///< reservedPagesを登録時にバイト数へ変換した追加予約の最低量。
+        size_t freeThreshold{}; ///< フレーム末尾で補充する空きポインタ数。0なら追加時に自動補充。
+        bool preTouch{}; ///< コミット時に新しいページへ書き込むか。
         size_t count{}; ///< 状態0を含む格納済みポインタ数。
         size_t capacity{}; ///< コミット済み領域に格納できるポインタ数。
         size_t reservedBytes{}; ///< 全Regionの予約バイト数。未コミット部分も含む。
