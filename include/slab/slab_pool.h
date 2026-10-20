@@ -57,16 +57,16 @@ public:
     using Index = size_t;
     static constexpr Index InvalidIndex{numeric_limits<Index>::max()};
 
-    /** @brief 格納領域はOSの通常ページ数で指定する。freeThresholdだけはポインタ数。 */
+    /** @brief 容量と閾値はコンポーネント数で指定する。1個につきComponent*を1枠保持し、実際の確保量はOSページ単位へ切り上げる。 */
     struct Options {
-        /** @brief 登録時にコミットする最低ページ数。commitPages単位へ切り上げ、予約量を上限とする。0なら予約のみ。 */
-        size_t initialPages{1};
+        /** @brief 登録時にコミットする最低個数。追加コミット単位へ切り上げ、予約量を上限とする。0なら予約のみ。 */
+        size_t initialCapacity{64};
 
-        /** @brief 最初と不足時に予約する最低ページ数。1以上かつinitialPages以上を指定する。 */
-        size_t reservedPages{128};
+        /** @brief 最初と不足時に予約する最低個数。1以上かつinitialCapacity以上を指定する。 */
+        size_t reservedCapacity{65536};
 
-        /** @brief 追加コミットのページ数。1以上を指定する。自動補充時は予約済みの残量が上限。 */
-        size_t commitPages{1};
+        /** @brief 追加コミットの基準個数。1以上を指定し、ポインタのバイト数へ変換してページ単位に切り上げる。自動補充時は予約済みの残量が上限。 */
+        size_t commitCount{512};
 
         /** @brief コミット時に新しいページへ書き込む。 */
         bool preTouch{true};
@@ -168,7 +168,7 @@ public:
     size_t RemoveInactive() noexcept;
 
     /**
-     * @brief フレーム末尾で空きが閾値以下ならcommitPagesページ分を追加。閾値0なら何もしない。
+     * @brief フレーム末尾で空きが閾値以下ならcommitCountをページ単位に切り上げた容量を追加。閾値0なら何もしない。
      * @details 同じIDが使用中なら解放を待つ。未登録ID・サイズ超過・確保失敗はfalse。
      * @pre 呼び出し側が同じIDのRangeを保持していないこと。
      */
@@ -292,8 +292,8 @@ private:
     // 内部型の定義。直接メンバーとして保持するため、必要な型情報をここへまとめる。
     /** @brief ID単位の格納領域と走査権。型情報は保持せず、コンポーネント実体は所有しない。 */
     struct Group {
-        size_t commitStep{}; ///< commitPagesを登録時にバイト数へ変換した追加コミット量。
-        size_t reservationStep{}; ///< reservedPagesを登録時にバイト数へ変換した追加予約の最低量。
+        size_t commitStep{}; ///< commitCount個分のポインタ領域をページ単位に切り上げたバイト数。
+        size_t reservationStep{}; ///< reservedCapacity個分のポインタ領域をページ単位に切り上げたバイト数。
         size_t freeThreshold{}; ///< フレーム末尾で補充する空きポインタ数。0なら追加時に自動補充。
         bool preTouch{}; ///< コミット時に新しいページへ書き込むか。
         size_t count{}; ///< 状態0を含む格納済みポインタ数。

@@ -100,22 +100,26 @@ SlabPool::Group* SlabPool::Find(PoolId id) const noexcept {
 }
 
 bool SlabPool::Register(PoolId id, const Options& options) noexcept {
+    const auto maximumCount{MaximumBytes / PointerBytes};
+    if (Find(id) != nullptr || options.reservedCapacity == 0 || options.commitCount == 0 ||
+        options.initialCapacity > options.reservedCapacity ||
+        options.reservedCapacity > maximumCount || options.commitCount > maximumCount ||
+        options.freeThreshold > maximumCount) { return false; }
+    // 個数から必要バイト数へ変換し、ページの余りも格納に使える容量として確保する。
     const auto pageBytes{GetPageBytes()};
-    const auto maximumPages{MaximumBytes / pageBytes};
-    if (Find(id) != nullptr || options.reservedPages == 0 || options.commitPages == 0 ||
-        options.initialPages > options.reservedPages ||
-        options.reservedPages > maximumPages || options.commitPages > maximumPages ||
-        options.freeThreshold > MaximumBytes / PointerBytes) { return false; }
+    size_t commitStep{};
+    size_t reservationStep{};
+    if (!RoundUp(options.commitCount * PointerBytes, pageBytes, commitStep) ||
+        !RoundUp(options.reservedCapacity * PointerBytes, pageBytes, reservationStep)) { return false; }
     auto& groups{registry_.groups};
     if (groups.empty()) { groups.reserve(InitialGroupCapacity); }
     // 登録済みIDは冒頭で除外済み。operator[]で空のGroupを作って設定する。
     auto& group{groups[id]};
-    group.commitStep = options.commitPages * pageBytes;
-    group.reservationStep = options.reservedPages * pageBytes;
+    group.commitStep = commitStep;
+    group.reservationStep = reservationStep;
     group.freeThreshold = options.freeThreshold;
     group.preTouch = options.preTouch;
-    if (!ReserveGroup(group, group.reservationStep / PointerBytes) ||
-        !CommitGroup(group, options.initialPages * pageBytes / PointerBytes)) {
+    if (!ReserveGroup(group, options.reservedCapacity) || !CommitGroup(group, options.initialCapacity)) {
         // Groupのデストラクタが、途中まで準備した領域も解放する。
         groups.erase(id);
         return false;
