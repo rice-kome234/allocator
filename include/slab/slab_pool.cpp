@@ -107,22 +107,27 @@ bool SlabPool::Register(PoolId id, const Options& options) noexcept {
         options.freeThreshold > maximumCount) { return false; }
     // 個数から必要バイト数へ変換し、ページの余りも格納に使える容量として確保する。
     const auto pageBytes{GetPageBytes()};
+    size_t initialBytes{};
     size_t commitStep{};
     size_t reservationStep{};
-    if (!RoundUp(options.commitCount * PointerBytes, pageBytes, commitStep) ||
+    if (!RoundUp(options.initialCapacity * PointerBytes, pageBytes, initialBytes) ||
+        !RoundUp(options.commitCount * PointerBytes, pageBytes, commitStep) ||
         !RoundUp(options.reservedCapacity * PointerBytes, pageBytes, reservationStep)) { return false; }
     auto& groups{registry_.groups};
     if (groups.empty()) { groups.reserve(InitialGroupCapacity); }
     // 登録済みIDは冒頭で除外済み。operator[]で空のGroupを作って設定する。
     auto& group{groups[id]};
-    group.commitStep = commitStep;
+    group.commitStep = initialBytes;
     group.reservationStep = reservationStep;
     group.freeThreshold = options.freeThreshold;
     group.preTouch = options.preTouch;
+    group.allowAdditionalReserve = options.allowAdditionalReserve;
     bool prepared{ReserveGroup(group)};
-    while (prepared && group.capacity < options.initialCapacity) {
+    if (prepared && initialBytes != 0) {
         prepared = CommitGroup(group);
     }
+    // 初期容量をまとめて準備した後は、通常の追加コミット量に戻す。
+    group.commitStep = commitStep;
     if (!prepared) {
         // Groupのデストラクタが、途中まで準備した領域も解放する。
         groups.erase(id);
@@ -132,6 +137,7 @@ bool SlabPool::Register(PoolId id, const Options& options) noexcept {
 }
 
 bool SlabPool::ReserveGroup(Group& group) noexcept {
+    if (!group.allowAdditionalReserve && group.reservedBytes != 0) { return false; }
     const auto bytes{group.reservationStep};
     if (bytes > MaximumBytes - group.reservedBytes) { return false; }
     auto& region{group.regions.emplace_back()};
@@ -145,8 +151,12 @@ bool SlabPool::ReserveGroup(Group& group) noexcept {
 
 bool SlabPool::CommitGroup(Group& group) noexcept {
     const auto committedBytes{group.capacity * PointerBytes};
-    if (group.commitStep > MaximumBytes - committedBytes) { return false; }
-    const auto targetBytes{committedBytes + group.commitStep};
+    auto additionalBytes{group.commitStep};
+    if (!group.allowAdditionalReserve) {
+        additionalBytes = min(additionalBytes, group.reservedBytes - committedBytes);
+    }
+    if (additionalBytes == 0 || additionalBytes > MaximumBytes - committedBytes) { return false; }
+    const auto targetBytes{committedBytes + additionalBytes};
     while (group.reservedBytes < targetBytes) {
         if (!ReserveGroup(group)) { return false; }
     }

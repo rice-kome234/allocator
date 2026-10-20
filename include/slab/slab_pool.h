@@ -59,13 +59,13 @@ public:
 
     /** @brief 容量と閾値はコンポーネント数で指定する。1個につきComponent*を1枠保持し、実際の確保量はOSページ単位へ切り上げる。 */
     struct Options {
-        /** @brief 登録時にコミットする最低個数。追加コミットを必要回数繰り返す。0なら予約のみ。 */
+        /** @brief 登録時に一度にコミットする最低個数。ページ単位へ切り上げる。0なら予約のみ。 */
         size_t initialCapacity{64};
 
         /** @brief 最初と不足時に予約する最低個数。1以上かつinitialCapacity以上を指定する。 */
         size_t reservedCapacity{65536};
 
-        /** @brief 追加コミットの基準個数。1以上を指定し、ポインタのバイト数へ変換してページ単位に切り上げる。予約が不足すれば補充する。 */
+        /** @brief 追加コミットの基準個数。1以上を指定し、ポインタのバイト数へ変換してページ単位に切り上げる。追加予約を禁止した場合は予約残量が上限。 */
         size_t commitCount{512};
 
         /** @brief コミット時に新しいページへ書き込む。 */
@@ -73,6 +73,13 @@ public:
 
         /** @brief 0なら追加時に自動コミット。1以上ならフレーム末尾にこの空き数以下で補充。 */
         size_t freeThreshold{0};
+
+        /**
+         * @brief trueなら不足時に仮想アドレス領域を追加予約する。falseなら初回の予約領域内だけを使う。
+         * @details falseでも予約済み領域のコミットは可能。ページ単位に切り上げた予約容量を使い切ると、
+         * AddはInvalidIndex、補充が必要なCommitAtFrameEndはfalseを返す。
+         */
+        bool allowAdditionalReserve{true};
     };
 
     /** @brief ID全体の走査権を持つ範囲。状態0を飛ばし、破棄時に走査権を解放する。 */
@@ -170,6 +177,7 @@ public:
     /**
      * @brief フレーム末尾で空きが閾値以下ならcommitCountをページ単位に切り上げた容量を追加。閾値0なら何もしない。
      * @details 同じIDが使用中なら解放を待つ。未登録ID・サイズ超過・確保失敗はfalse。
+     * 補充が必要なとき、追加予約を禁止している場合は予約残量までコミットし、残量が0ならfalse。
      * @pre 呼び出し側が同じIDのRangeを保持していないこと。
      */
     [[nodiscard]]
@@ -238,8 +246,8 @@ private:
      * @brief GroupのreservationStepバイト分を、新しい仮想アドレス領域として追加予約する。
      * @pre Groupの初期化中、または呼び出し元が走査権を保持していること。
      * reservationStepは登録時に検証済みの、正のページ単位のバイト数であること。
-     * @return 追加予約に成功すればtrue。合計サイズの上限超過・予約失敗はfalse。
-     * @note 呼ぶたびにRegionを一つ追加する。コミットや既存領域の移動は行わない。
+     * @return 予約に成功すればtrue。追加禁止かつ初回予約済み・合計サイズの上限超過・予約失敗はfalse。
+     * @note 成功時にRegionを一つ追加する。初回予約は追加禁止でも行う。コミットや既存領域の移動は行わない。
      */
     [[nodiscard]]
     static bool ReserveGroup(Group& group) noexcept;
@@ -248,8 +256,9 @@ private:
      * @brief GroupのcommitStepバイト分を追加コミットする。初期確保と通常の補充で共用する。
      * @pre Groupの初期化中、または呼び出し元が走査権を保持していること。
      * commitStepは登録時に検証済みの、正のページ単位のバイト数であること。
-     * @return 1単位分のコミットが完了すればtrue。サイズ超過・予約やコミットの失敗はfalse。
-     * @details 予約が足りるまでReserveGroupを呼ぶ。領域をまたぐ場合は分けてコミットする。
+     * @return コミットが完了すればtrue。予約残量なし・サイズ超過・予約やコミットの失敗はfalse。
+     * @details 追加予約を許可していれば、予約が足りるまでReserveGroupを呼ぶ。
+     * 禁止していれば予約残量を上限とする。領域をまたぐ場合は分けてコミットする。
      * ポインタ配列の寿命を開始し、preTouchもここで行う。
      * @note 途中で失敗しても、それまで成功した予約・コミットはGroupに保持する。
      */
@@ -293,10 +302,11 @@ private:
     // 内部型の定義。直接メンバーとして保持するため、必要な型情報をここへまとめる。
     /** @brief ID単位の格納領域と走査権。型情報は保持せず、コンポーネント実体は所有しない。 */
     struct Group {
-        size_t commitStep{}; ///< commitCount個分のポインタ領域をページ単位に切り上げたバイト数。
+        size_t commitStep{}; ///< 追加コミットのバイト数。登録中だけ初期容量に設定し、初期コミット後に通常量へ変更する。
         size_t reservationStep{}; ///< reservedCapacity個分のポインタ領域をページ単位に切り上げたバイト数。
         size_t freeThreshold{}; ///< フレーム末尾で補充する空きポインタ数。0なら追加時に自動補充。
         bool preTouch{}; ///< コミット時に新しいページへ書き込むか。
+        bool allowAdditionalReserve{}; ///< 初回予約を使い切った後も、新しい仮想アドレス領域を予約できるか。
         size_t count{}; ///< 状態0を含む格納済みポインタ数。
         size_t capacity{}; ///< コミット済み領域に格納できるポインタ数。
         size_t reservedBytes{}; ///< 全Regionの予約バイト数。未コミット部分も含む。
