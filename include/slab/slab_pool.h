@@ -479,7 +479,7 @@ public:
     [[nodiscard]]
     size_t size() const noexcept {
         size_t result{};
-        for (auto iterator{begin()}; iterator != end(); ++iterator) { ++result; }
+        for ([[maybe_unused]] const auto& component : *this) { ++result; }
         return result;
     }
     /** @brief 利用可能な実体がなければtrue。取得の成否はbool変換で別に確認する。 */
