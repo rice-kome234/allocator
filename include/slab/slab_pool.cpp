@@ -56,10 +56,6 @@ struct SlabPool::Chunk {
 SlabPool::Group::Group() noexcept = default;
 SlabPool::Group::~Group() noexcept = default;
 
-bool SlabPool::Group::TryAcquire() noexcept {
-    bool expected{};
-    return inUse.compare_exchange_strong(expected, true, memory_order_acquire, memory_order_relaxed);
-}
 void SlabPool::Group::Acquire() noexcept {
     for (;;) {
         // CAS失敗時にはexpectedが書き換わるので、試行ごとにfalseへ戻す。
@@ -88,9 +84,7 @@ SlabPool& SlabPool::GetInstance() noexcept {
 }
 
 SlabPool::~SlabPool() noexcept {
-    const bool cleared{Clear()};
-    assert(cleared);
-    (void)cleared;
+    Clear();
 }
 
 SlabPool::Group* SlabPool::Find(PoolId id) const noexcept {
@@ -238,20 +232,11 @@ bool SlabPool::NotifyStateChanged(PoolId id) noexcept {
 }
 
 size_t SlabPool::RemoveInactive() noexcept {
-    auto& groups{registry_.groups};
-    // 先に全IDを取得し、一つでも使用中なら取得済みの権利だけを戻す。内容は変更しない。
-    for (auto& entry : groups) {
-        if (!entry.second.TryAcquire()) {
-            for (auto& acquired : groups) {
-                if (acquired.first == entry.first) { break; }
-                acquired.second.Release();
-            }
-            return InvalidIndex;
-        }
-    }
     size_t removed{};
-    for (auto& entry : groups) {
+    for (auto& entry : registry_.groups) {
         auto& group{entry.second};
+        // このIDだけを取得する。continueや反復の終了時にも走査権を解放する。
+        Group::Access access{&group};
         if (!group.mayContainInactive.exchange(false, memory_order_acq_rel)) { continue; }
         if (group.count == 0) { continue; }
         const auto originalCount{group.count};
@@ -272,26 +257,18 @@ size_t SlabPool::RemoveInactive() noexcept {
         }
         removed += originalCount - group.count;
     }
-    for (auto& entry : groups) { entry.second.Release(); }
     return removed;
 }
 
-bool SlabPool::Clear() noexcept {
+void SlabPool::Clear() noexcept {
     auto& groups{registry_.groups};
-    // 全IDを先に確認し、使用中なら取得した権利だけを戻す。部分的には解放しない。
-    for (auto& entry : groups) {
-        if (!entry.second.TryAcquire()) {
-            for (auto& acquired : groups) {
-                if (acquired.first == entry.first) { break; }
-                acquired.second.Release();
-            }
-            return false;
-        }
+    // 新規操作の停止と待機中の操作の完了は呼び出し元が保証する。この検査は同期処理ではない。
+    for ([[maybe_unused]] const auto& entry : groups) {
+        assert(!entry.second.inUse.load(memory_order_relaxed));
     }
     // 空のmapと交換し、登録に伴うノード・バケットと全Slabを解放する。
     decltype(registry_.groups) empty{};
     groups.swap(empty);
-    return true;
 }
 
 SlabPool::View SlabPool::AcquireView(PoolId id) const noexcept {

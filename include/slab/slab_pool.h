@@ -39,10 +39,11 @@ protected:
 /**
  * @brief ポインタを連続配置する非所有プール。実体のコピー・移動・解放は行わない。
  * @details Componentのstateを直接読み、0の要素を走査から除外する。
- * 全利用者の完了後に RemoveInactive で末尾ポインタを移して穴を詰める。
+ * RemoveInactiveはID単位で走査権を待ち、末尾ポインタを移して穴を詰める。
  * @pre Register・Clear・破棄は待機者を含む全利用者の停止中だけ行う。PoolはRangeより長く生存すること。
  * 同じIDは同時に一つのRangeだけが取得でき、使用中なら解放を待つ。別IDは並列利用できる。
  * Rangeを保持したまま同じIDのGetRange・Addを呼ばないこと。
+ * RemoveInactiveは呼び出し側が全Rangeを解放してから呼ぶこと。
  * CommitAtFrameEndは補充対象IDのRangeを解放してから呼ぶこと。
  * 複数IDを同時に保持する場合は全スレッドで取得順を統一し、循環待ちを作らないこと。
  * 実体を複数IDで共有したり、担当外の実体へ並列アクセスしたりしない。
@@ -165,12 +166,13 @@ public:
 
     /**
      * @brief 全IDのうち変更フラグがあるものだけ、状態0を末尾との入れ替えで除去する。
-     * @return 全IDの除去数の合計。未登録・全フラグなしなら0。
-     * いずれかのIDが使用中なら、全IDの内容と変更フラグを維持してInvalidIndexを返す。
-     * @details フラグがないIDのポインタ配列は走査しない。処理したIDのフラグは解除する。
-     * @pre 待機中の操作も含め、全IDの走査・状態更新・通知・取得済み参照の利用が完了していること。
-     * 自動で待機しない。
+     * @return この呼び出しで除去したポインタ数の合計。空Pool・除去対象なしなら0。使用中を理由に失敗しない。
+     * @details 1IDずつ走査権を待機して取得し、変更フラグを受け取って処理後に解放する。
+     * フラグがないIDも取得は行うが、ポインタ配列は走査しない。
+     * 処理済みIDへの後続の変更通知は次回対象となる。全IDを同時に固定する操作ではない。
+     * @pre 呼び出し側がいずれのIDのRangeも保持していないこと。並列にRegister・Clear・Poolの破棄を行わないこと。
      * @note 順序と添字は変わる。実体の位置は変わらず、deleteも行わない。
+     * 実体の解放は、Poolからの除去と全利用者の完了を確認して外側で行う。
      */
     [[nodiscard]]
     size_t RemoveInactive() noexcept;
@@ -189,15 +191,14 @@ public:
 
     /**
      * @brief 全IDの登録・ポインタ・管理情報を消し、予約とコミットを含む全格納領域を解放する。
-     * @pre 待機中の操作も含め、他スレッドからのPool操作を停止してから呼ぶ。
-     * 並列呼び出しとの同期は行わない。
-     * @return 全解放できればtrue。使用中のIDがあれば何も解放せずfalse。
+     * @pre 新しいPool操作を開始させず、待機中も含む全操作の完了と全Rangeの解放を外側で保証してから呼ぶ。
+     * 待機者の終了を待つ処理や、並列呼び出しとの同期は行わない。
      * @details 空Poolにも繰り返し呼べる。再利用時はRegisterからやり直す。
      * Registry自体はメンバーとして残し、mapを空の初期状態へ戻す。
-     * @note 参照先のコンポーネント実体は解放しない。成功後に外側の所有者が解放する。
+     * Debugでは使用中のIDをassertで検出する。この検査は待機者や新規操作の不在を保証しない。
+     * @note 参照先のコンポーネント実体は解放しない。完了後に外側の所有者が解放する。
      */
-    [[nodiscard]]
-    bool Clear() noexcept;
+    void Clear() noexcept;
 
 private:
     /** @brief サイズ計算とポインタ差分で扱うバイト数の上限。 */
@@ -324,10 +325,6 @@ private:
         /** @brief 管理情報と仮想領域を解放する。実体の解放は外部の所有者が行う。 */
         ~Group() noexcept;
 
-        /** @brief Clear・RemoveInactive用に走査権を一度だけ取得する。使用中なら待たずに失敗する。 */
-        [[nodiscard]]
-        bool TryAcquire() noexcept;
-
         /**
          * @brief IDの走査権を取得する。使用中ならatomic::waitで待機して再試行する。
          * @pre 同じIDの走査権を自分が保持していないこと。待機中もGroupが生存すること。
@@ -337,7 +334,7 @@ private:
         /** @brief 走査権を解放し、更新内容を次の利用者へ引き継いで待機者へ通知する。 */
         void Release() noexcept;
 
-        /** @brief Add・CommitAtFrameEnd用の待機式排他ガード。破棄時に走査権を解放する。 */
+        /** @brief Add・CommitAtFrameEnd・RemoveInactive用の待機式排他ガード。破棄時に走査権を解放する。 */
         struct Access {
             Group* owned{}; ///< 走査権を取得したGroup。未取得ならnullptr。
             /** @brief 走査権を待機して取得する。nullptrの場合だけ未取得のままにする。 */
