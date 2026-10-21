@@ -240,9 +240,12 @@ bool SlabPool::NotifyStateChanged(PoolId id) noexcept {
 size_t SlabPool::RemoveInactive() noexcept {
     auto& groups{registry_.groups};
     // 先に全IDを取得し、一つでも使用中なら取得済みの権利だけを戻す。内容は変更しない。
-    for (auto position{groups.begin()}; position != groups.end(); ++position) {
-        if (!position->second.TryAcquire()) {
-            for (auto acquired{groups.begin()}; acquired != position; ++acquired) { acquired->second.Release(); }
+    for (auto& entry : groups) {
+        if (!entry.second.TryAcquire()) {
+            for (auto& acquired : groups) {
+                if (acquired.first == entry.first) { break; }
+                acquired.second.Release();
+            }
             return InvalidIndex;
         }
     }
@@ -276,9 +279,12 @@ size_t SlabPool::RemoveInactive() noexcept {
 bool SlabPool::Clear() noexcept {
     auto& groups{registry_.groups};
     // 全IDを先に確認し、使用中なら取得した権利だけを戻す。部分的には解放しない。
-    for (auto position{groups.begin()}; position != groups.end(); ++position) {
-        if (!position->second.TryAcquire()) {
-            for (auto acquired{groups.begin()}; acquired != position; ++acquired) { acquired->second.Release(); }
+    for (auto& entry : groups) {
+        if (!entry.second.TryAcquire()) {
+            for (auto& acquired : groups) {
+                if (acquired.first == entry.first) { break; }
+                acquired.second.Release();
+            }
             return false;
         }
     }
