@@ -2,6 +2,11 @@
  * @brief 数値ID別に外部オブジェクトのポインタを保持するSlab Pool。
  */
 #pragma once
+
+#if !defined(_WIN32)
+#error "SlabPoolはWindows専用です。このプラットフォームには対応していません。"
+#else
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -360,6 +365,15 @@ private:
     mutable Registry registry_{};
 };
 
+/**
+ * @brief 共有Poolを短い名前で取得する。SlabPool::GetInstance()と同じインスタンスを返す。
+ * @details 共有PoolはGetInstance()の初回呼び出し時に生成する。各操作の並列利用条件はSlabPoolと同じ。
+ */
+[[nodiscard]]
+inline SlabPool& GetPool() noexcept {
+    return SlabPool::GetInstance();
+}
+
 // -----------------------------------------------------------------------------
 // テンプレート実装（Range・イテレータを含む）
 // -----------------------------------------------------------------------------
@@ -499,3 +513,5 @@ SlabPool::Range<const T> SlabPool::GetRange(PoolId id) const noexcept {
     return Range<const T>{AcquireView(id)};
 }
 }
+
+#endif // defined(_WIN32)

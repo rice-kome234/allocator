@@ -2,6 +2,9 @@
  * @brief ポインタ用仮想メモリ、ID単位の排他取得、フレーム末尾の末尾入れ替え除去。
  */
 #include "slab_pool.h"
+
+#if defined(_WIN32)
+
 #include <Windows.h>
 #include <algorithm>
 #include <cassert>
@@ -285,3 +288,5 @@ void SlabPool::ReleaseView(View& view) noexcept {
     if (group != nullptr) { group->Release(); }
 }
 }
+
+#endif // defined(_WIN32)
