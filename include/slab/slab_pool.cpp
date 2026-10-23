@@ -289,4 +289,31 @@ void SlabPool::ReleaseView(View& view) noexcept {
 }
 }
 
+#else
+
+namespace slab {
+// Windows以外はAPIの呼び出しを正常扱いで受け流す。ポインタや実体は保持しない。
+SlabPool::SlabPool() noexcept = default;
+SlabPool::~SlabPool() noexcept = default;
+
+SlabPool& SlabPool::GetInstance() noexcept {
+    static SlabPool instance{};
+    return instance;
+}
+
+bool SlabPool::Register(PoolId, const Options&) noexcept { return true; }
+SlabPool::Index SlabPool::Add(PoolId, Component*) noexcept { return 0; }
+bool SlabPool::NotifyStateChanged(PoolId) noexcept { return true; }
+size_t SlabPool::RemoveInactive() noexcept { return 0; }
+bool SlabPool::CommitAtFrameEnd() noexcept { return true; }
+void SlabPool::Clear() noexcept {}
+}
+
 #endif // defined(_WIN32)
+
+namespace slab {
+const SlabPool::Options& SlabPool::DefaultOptions() noexcept {
+    static constexpr Options options{};
+    return options;
+}
+}

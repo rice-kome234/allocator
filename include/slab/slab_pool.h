@@ -3,19 +3,20 @@
  */
 #pragma once
 
-#if !defined(_WIN32)
-#error "SlabPoolはWindows専用です。このプラットフォームには対応していません。"
-#else
-
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <limits>
-#include <list>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
+
+#if defined(_WIN32)
+#include <atomic>
+#include <list>
+#include <unordered_map>
+#else
+#include <cstdlib>
+#endif
 
 namespace slab {
 // 標準ライブラリの名前はslab名前空間内でまとめて扱う。
@@ -53,12 +54,17 @@ protected:
  * 複数IDを同時に保持する場合は全スレッドで取得順を統一し、循環待ちを作らないこと。
  * 実体を複数IDで共有したり、担当外の実体へ並列アクセスしたりしない。
  * 取得した参照・ポインタ・イテレータはRangeの解放前に使い終えること。
+ * @note Windows以外は格納・確保・排他を行わない空実装。Register・NotifyStateChanged・CommitAtFrameEndはtrue、
+ * Addは常に0を返す。GetRangeは取得成功扱いの空Range、RemoveInactiveは0、Clearは何もしない。
+ * Addの0は互換性のための戻り値であり、格納した位置ではない。上記の排他規約はWindows実装に適用する。
  */
 class SlabPool {
+#if defined(_WIN32)
     struct Group;
     struct Region;
     struct Chunk;
     struct Registry;
+#endif
 public:
     using PoolId = uint32_t;
     using Index = size_t;
@@ -122,7 +128,7 @@ public:
      * @note map・listなど標準ライブラリの確保失敗は終了扱い。Slab用の仮想メモリの確保失敗はfalseを返す。
      */
     [[nodiscard]]
-    bool Register(PoolId id, const Options& options = {}) noexcept;
+    bool Register(PoolId id, const Options& options = DefaultOptions()) noexcept;
 
     /**
      * @brief ポインタを1件末尾に追加し、格納添字を返す。実体はコピーしない。
@@ -206,6 +212,11 @@ public:
     void Clear() noexcept;
 
 private:
+    /** @brief クラス定義の完了後に生成した既定設定を返す。Registerの引数省略に使う。 */
+    [[nodiscard]]
+    static const Options& DefaultOptions() noexcept;
+
+#if defined(_WIN32)
     /** @brief サイズ計算とポインタ差分で扱うバイト数の上限。 */
     static constexpr size_t MaximumBytes{static_cast<size_t>(PTRDIFF_MAX)};
     /** @brief 格納するポインタのサイズ。対象構成に合わせてコンパイル時に決まる。 */
@@ -363,6 +374,7 @@ private:
 
     /** @brief constのGetRangeでも走査権を更新するためmutable。登録情報の変更は非const操作だけが行う。 */
     mutable Registry registry_{};
+#endif
 };
 
 /**
@@ -377,6 +389,8 @@ inline SlabPool& GetPool() noexcept {
 // -----------------------------------------------------------------------------
 // テンプレート実装（Range・イテレータを含む）
 // -----------------------------------------------------------------------------
+
+#if defined(_WIN32)
 
 /**
  * @brief ID全体の走査権を所有する移動専用の範囲。状態0を選択時に飛ばす。
@@ -503,15 +517,109 @@ private:
     View view_{}; ///< 所有する走査権と、その寿命中に参照できる格納領域。
 };
 
+#else
+
+/**
+ * @brief Windows以外で使う、要素を持たない互換Range。範囲forの本体は実行されない。
+ * @details GetRangeからの取得は成功扱い。既定生成・移動元・Reset後のbool変換はfalse。
+ * コピー不可・移動可の公開仕様は共通で、実体・参照先・走査権は保持しない。
+ */
+template<class T>
+class SlabPool::Range {
+    static_assert(!is_volatile_v<T>, "走査する型にvolatileは指定できません。");
+    static_assert(is_convertible_v<T*, const Component*> &&
+        requires(Component* pointer) { static_cast<T*>(pointer); },
+        "Componentをpublicかつ非virtualで一意に継承してください。");
+public:
+    /** @brief 常に終端を表す空イテレータ。逆参照はできない。 */
+    class Iterator {
+    public:
+        using iterator_category = forward_iterator_tag;
+        using iterator_concept = forward_iterator_tag;
+        using value_type = remove_const_t<T>;
+        using difference_type = ptrdiff_t;
+        using pointer = T*;
+        using reference = T&;
+
+        /** @brief 終端イテレータを作る。 */
+        Iterator() noexcept = default;
+        /** @brief 終端の逆参照は誤用なので終了する。空の範囲forからは呼ばれない。 */
+        [[nodiscard]]
+        reference operator*() const noexcept { abort(); }
+        /** @brief 参照先は常に存在しない。戻り値を逆参照しないこと。 */
+        [[nodiscard]]
+        pointer operator->() const noexcept { return nullptr; }
+        /** @brief 空範囲なので位置は変わらない。 */
+        Iterator& operator++() noexcept { return *this; }
+        /** @brief 空範囲の終端を返す。 */
+        Iterator operator++(int) noexcept { return *this; }
+        /** @brief 全イテレータが同じ終端を表す。 */
+        [[nodiscard]]
+        friend bool operator==(const Iterator&, const Iterator&) noexcept { return true; }
+    };
+
+    /** @brief 未取得の空Rangeを作る。 */
+    Range() noexcept = default;
+    /** @brief Windows版と同じくコピーは禁止する。 */
+    Range(const Range&) = delete;
+    /** @brief Windows版と同じくコピー代入は禁止する。 */
+    Range& operator=(const Range&) = delete;
+    /** @brief 取得状態を引き継ぎ、移動元を未取得にする。 */
+    Range(Range&& other) noexcept : acquired_{exchange(other.acquired_, false)} {}
+    /** @brief 取得状態を引き継ぐ。自己代入では変更しない。 */
+    Range& operator=(Range&& other) noexcept {
+        if (this != &other) { acquired_ = exchange(other.acquired_, false); }
+        return *this;
+    }
+    /** @brief 解放する資源は持たない。 */
+    ~Range() noexcept = default;
+
+    /** @brief GetRangeから取得した空Rangeならtrue。格納済み要素があることは意味しない。 */
+    [[nodiscard]]
+    explicit operator bool() const noexcept { return acquired_; }
+    /** @brief 未取得に戻す。何度呼んでもよい。 */
+    void Reset() noexcept { acquired_ = false; }
+    /** @brief 空範囲の終端を返す。 */
+    [[nodiscard]]
+    Iterator begin() const noexcept { return {}; }
+    /** @brief 空範囲の終端を返す。 */
+    [[nodiscard]]
+    Iterator end() const noexcept { return {}; }
+    /** @brief 常に0。ポインタは格納しない。 */
+    [[nodiscard]]
+    size_t StoredCount() const noexcept { return 0; }
+    /** @brief 常に0。実体は走査しない。 */
+    [[nodiscard]]
+    size_t size() const noexcept { return 0; }
+    /** @brief 常に空。 */
+    [[nodiscard]]
+    bool empty() const noexcept { return true; }
+private:
+    friend class SlabPool;
+    /** @brief GetRangeから取得成功扱いの空Rangeを作る。 */
+    explicit Range(bool acquired) noexcept : acquired_{acquired} {}
+    bool acquired_{}; ///< 互換性のための取得状態。実際の走査権は保持しない。
+};
+
+#endif // defined(_WIN32)
+
 template<class T>
 SlabPool::Range<T> SlabPool::GetRange(PoolId id) noexcept {
+#if defined(_WIN32)
     return Range<T>{AcquireView(id)};
+#else
+    (void)id;
+    return Range<T>{true};
+#endif
 }
 
 template<class T>
 SlabPool::Range<const T> SlabPool::GetRange(PoolId id) const noexcept {
+#if defined(_WIN32)
     return Range<const T>{AcquireView(id)};
+#else
+    (void)id;
+    return Range<const T>{true};
+#endif
 }
 }
-
-#endif // defined(_WIN32)
